@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ManagerPlatform</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- JWT 认证 -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.*" />
+    <!-- 密码哈希（PBKDF2）已由内置 API 提供，无需额外包 -->
+    <!-- LiveKit 官方社区 .NET SDK：生成入会 Token / RoomService -->
+    <PackageReference Include="Livekit.Server.Sdk.Dotnet" Version="1.0.*" />
+    <!-- .NET 10 内置 OpenAPI 文档生成 -->
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.*" />
+    <!-- API 文档 UI（Scalar） -->
+    <PackageReference Include="Scalar.AspNetCore" Version="2.0.*" />
+  </ItemGroup>
+
+</Project>

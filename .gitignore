@@ -1,0 +1,12 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.idea/
+
+## 本地配置（含密钥）
+appsettings.Development.Local.json
+secrets.json
+.dp-keys/
