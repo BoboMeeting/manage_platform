@@ -424,9 +424,28 @@ public static class RoomEndpoints
         return app;
     }
 
-    private static RoomSummary ToSummary(MeetingRoom r) => new(
-        r.Id, r.Title, r.RoomName, r.HostUserId, r.HostNickname,
-        r.StartTime, r.EndTime, r.MaxParticipants, r.Status, r.Locked, r.InviteCode, r.CreatedAt);
+    private static RoomSummary ToSummary(MeetingRoom r) => ToSummary(r, DateTimeOffset.UtcNow);
+
+    private static RoomSummary ToSummary(MeetingRoom r, DateTimeOffset now)
+    {
+        var status = ComputeEffectiveStatus(r, now);
+        return new RoomSummary(
+            r.Id, r.Title, r.RoomName, r.HostUserId, r.HostNickname,
+            r.StartTime, r.EndTime, r.MaxParticipants, status, r.Locked, r.InviteCode, r.CreatedAt);
+    }
+
+    /// <summary>
+    /// 根据当前时间虚算会议状态：Cancelled 为终态不变；超过 EndTime → Closed；
+    /// 已到 StartTime 但仍未被 join（仍为 Scheduled）→ Open。不落库，仅影响显示。
+    /// </summary>
+    private static MeetingRoomStatus ComputeEffectiveStatus(MeetingRoom r, DateTimeOffset now)
+    {
+        if (r.Status == MeetingRoomStatus.Cancelled) return r.Status;
+        if (now > r.EndTime) return MeetingRoomStatus.Closed;
+        if (r.Status == MeetingRoomStatus.Scheduled && now >= r.StartTime)
+            return MeetingRoomStatus.Open;
+        return r.Status;
+    }
 
     private static ConferenceSummary ToConfSummary(Conference c, int activeCount) => new(
         c.Id, c.RoomId, c.StartedByUserId, c.Status, c.StartedAt, c.EndedAt, activeCount);
