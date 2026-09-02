@@ -156,7 +156,7 @@ public static class AdminEndpoints
 
         // ===== 会议管理 =====
 
-        group.MapGet("/rooms", async (MeetingStatus? status, IRoomStore rooms, CancellationToken ct) =>
+        group.MapGet("/rooms", async (MeetingRoomStatus? status, IRoomStore rooms, CancellationToken ct) =>
         {
             var list = status.HasValue
                 ? await rooms.FindAsync(hostUserId: null, status, ct)
@@ -171,7 +171,7 @@ public static class AdminEndpoints
         {
             var room = await rooms.GetByIdAsync(id, ct);
             if (room is null) return Results.NotFound(new { error = "room not found" });
-            room.Status = MeetingStatus.Cancelled;
+            room.Status = MeetingRoomStatus.Cancelled;
             room.UpdatedAt = DateTimeOffset.UtcNow;
             await rooms.UpdateAsync(room, ct);
             return Results.Ok(new { ok = true });

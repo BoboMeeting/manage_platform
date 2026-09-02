@@ -58,7 +58,7 @@ public sealed record RoomSummary(
     DateTimeOffset StartTime,
     DateTimeOffset EndTime,
     int MaxParticipants,
-    MeetingStatus Status,
+    MeetingRoomStatus Status,
     bool Locked,
     string? InviteCode,
     DateTimeOffset CreatedAt);

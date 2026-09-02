@@ -46,7 +46,7 @@ public static class RoomEndpoints
                 StartTime = start,
                 DurationSeconds = duration,
                 MaxParticipants = max,
-                Status = MeetingStatus.Scheduled,
+                Status = MeetingRoomStatus.Scheduled,
                 InviteCode = string.IsNullOrWhiteSpace(req.InviteCode)
                     ? Guid.NewGuid().ToString("N")[..6].ToUpperInvariant()
                     : req.InviteCode,
@@ -94,7 +94,7 @@ public static class RoomEndpoints
         {
             var room = await rooms.GetByIdAsync(roomId, ct);
             if (room is null) return Results.NotFound(new { error = "room not found" });
-            if (room.Status == MeetingStatus.Cancelled || room.Status == MeetingStatus.Closed)
+            if (room.Status == MeetingRoomStatus.Cancelled || room.Status == MeetingRoomStatus.Closed)
                 return Results.Conflict(new { error = "会议已结束或取消" });
             if (room.Locked) return Results.Conflict(new { error = "房间已锁定" });
 
@@ -104,14 +104,14 @@ public static class RoomEndpoints
 
             var now = DateTimeOffset.UtcNow;
             // 时间窗口校验：提前 5 分钟可进入（用于主持人准备）
-            if (now < room.StartTime.AddMinutes(-5) && room.Status == MeetingStatus.Scheduled)
+            if (now < room.StartTime.AddMinutes(-5) && room.Status == MeetingRoomStatus.Scheduled)
                 return Results.Conflict(new { error = "会议尚未到开放时间" });
             // 预约时间窗口已结束 → 懒关闭房间并拒绝入会
             if (now > room.EndTime)
             {
-                if (room.Status == MeetingStatus.Open || room.Status == MeetingStatus.Scheduled)
+                if (room.Status == MeetingRoomStatus.Open || room.Status == MeetingRoomStatus.Scheduled)
                 {
-                    room.Status = MeetingStatus.Closed;
+                    room.Status = MeetingRoomStatus.Closed;
                     room.UpdatedAt = now;
                     await rooms.UpdateAsync(room, ct);
                 }
@@ -128,9 +128,9 @@ public static class RoomEndpoints
             bool isHost = user.Id == room.HostUserId;
 
             // 房间 Scheduled → Open（窗口已开放）
-            if (room.Status == MeetingStatus.Scheduled)
+            if (room.Status == MeetingRoomStatus.Scheduled)
             {
-                room.Status = MeetingStatus.Open;
+                room.Status = MeetingRoomStatus.Open;
                 room.UpdatedAt = now;
                 await rooms.UpdateAsync(room, ct);
             }

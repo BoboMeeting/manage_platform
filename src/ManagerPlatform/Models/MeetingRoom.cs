@@ -15,8 +15,8 @@ public sealed class MeetingRoom
 
     public string HostNickname { get; set; } = string.Empty;
 
-    /// <summary>LiveKit 房间名（默认与 Id 一致，便于客户端直接入会）</summary>
-    public string RoomName { get; set; } = string.Empty;
+    /// <summary>LiveKit 房间名（随机 9 位数字，便于客户端直接入会）</summary>
+    public string RoomName { get; set; } = Random.Shared.Next(100_000_000, 1_000_000_000).ToString();
 
     public DateTimeOffset StartTime { get; set; }
 
@@ -28,7 +28,7 @@ public sealed class MeetingRoom
     /// <summary>最大参会人数（含 AI）</summary>
     public int MaxParticipants { get; set; } = 50;
 
-    public MeetingStatus Status { get; set; } = MeetingStatus.Scheduled;
+    public MeetingRoomStatus Status { get; set; } = MeetingRoomStatus.Scheduled;
 
     /// <summary>是否锁定（禁止新成员加入）</summary>
     public bool Locked { get; set; }
@@ -41,7 +41,7 @@ public sealed class MeetingRoom
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
-public enum MeetingStatus
+public enum MeetingRoomStatus
 {
     /// <summary>已预约（未到开放时间）</summary>
     Scheduled = 0,

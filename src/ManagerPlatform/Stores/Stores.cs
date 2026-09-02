@@ -18,7 +18,7 @@ public interface IRoomStore
 {
     Task<MeetingRoom?> GetByIdAsync(string id, CancellationToken ct = default);
     Task<MeetingRoom?> GetByInviteCodeAsync(string inviteCode, CancellationToken ct = default);
-    Task<IReadOnlyList<MeetingRoom>> FindAsync(string? hostUserId, MeetingStatus? status, CancellationToken ct = default);
+    Task<IReadOnlyList<MeetingRoom>> FindAsync(string? hostUserId, MeetingRoomStatus? status, CancellationToken ct = default);
     Task AddAsync(MeetingRoom room, CancellationToken ct = default);
     Task UpdateAsync(MeetingRoom room, CancellationToken ct = default);
     Task<IReadOnlyList<MeetingRoom>> GetAllAsync(CancellationToken ct = default);
@@ -135,7 +135,7 @@ public sealed class InMemoryRoomStore : IRoomStore
     public Task<MeetingRoom?> GetByInviteCodeAsync(string inviteCode, CancellationToken ct = default) =>
         Task.FromResult(_byInvite.TryGetValue(inviteCode, out var r) ? r : null);
 
-    public Task<IReadOnlyList<MeetingRoom>> FindAsync(string? hostUserId, MeetingStatus? status, CancellationToken ct = default)
+    public Task<IReadOnlyList<MeetingRoom>> FindAsync(string? hostUserId, MeetingRoomStatus? status, CancellationToken ct = default)
     {
         IEnumerable<MeetingRoom> q = _byId.Values;
         if (!string.IsNullOrEmpty(hostUserId)) q = q.Where(r => r.HostUserId == hostUserId);
