@@ -6,6 +6,7 @@ using ManagerPlatform.Models;
 using ManagerPlatform.Options;
 using ManagerPlatform.Stores;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
@@ -74,6 +75,7 @@ builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(d
 // ===== 业务服务注册（内存存储，生产替换为 PostgreSQL 实现）=====
 builder.Services.AddSingleton<IUserStore, InMemoryUserStore>();
 builder.Services.AddSingleton<IRoomStore, InMemoryRoomStore>();
+builder.Services.AddSingleton<IConferenceStore, InMemoryConferenceStore>();
 builder.Services.AddSingleton<IParticipantStore, InMemoryParticipantStore>();
 builder.Services.AddSingleton<IAiRoleStore, InMemoryAiRoleStore>();
 builder.Services.AddSingleton<IAiSessionStore, InMemoryAiSessionStore>();
@@ -104,10 +106,46 @@ app.MapGet("/healthz", () => Results.Ok(new { ok = true, ts = DateTimeOffset.Utc
 
 app.MapAuthEndpoints();
 app.MapRoomEndpoints();
+app.MapConferenceEndpoints();
 app.MapAiRoleEndpoints();
 app.MapAdminEndpoints();
 
+// 启动期守护：所有要求管理角色(Observer+)的端点必须位于 /api/admin 下，
+// 否则 Nginx 无法按前缀对外隔离管理端接口。违规则拒绝启动（CI/部署即失败）。
+EnsureAdminEndpointsAreIsolated(app.Services);
+
 app.Run();
+
+static void EnsureAdminEndpointsAreIsolated(IServiceProvider services)
+{
+    // 凡要求观察者(Observer)及以上角色的策略，均为管理端专用
+    var adminPolicies = new HashSet<string>(StringComparer.Ordinal)
+    {
+        Policies.ObserveOnly, Policies.ObservePlus,
+        Policies.OperatorOnly, Policies.OperatorPlus, Policies.SuperAdminOnly,
+    };
+
+    var endpoints = services.GetRequiredService<EndpointDataSource>();
+    var offenders = new List<string>();
+    foreach (var ep in endpoints.Endpoints.OfType<RouteEndpoint>())
+    {
+        var route = ep.RoutePattern.RawText ?? string.Empty;
+        foreach (var attr in ep.Metadata.GetOrderedMetadata<AuthorizeAttribute>())
+        {
+            if (!string.IsNullOrEmpty(attr.Policy)
+                && adminPolicies.Contains(attr.Policy)
+                && !route.StartsWith("/api/admin", StringComparison.OrdinalIgnoreCase))
+            {
+                offenders.Add($"  [{attr.Policy}] {route}");
+            }
+        }
+    }
+
+    if (offenders.Count > 0)
+        throw new InvalidOperationException(
+            "管理端专用端点必须位于 /api/admin 前缀下，否则 Nginx 无法按前缀对外隔离。违规端点：\n"
+            + string.Join("\n", offenders));
+}
 
 // ===== 种子数据（local function，须位于类型声明之前）=====
 static async Task SeedAsync(IServiceProvider services)

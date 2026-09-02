@@ -27,10 +27,10 @@ public interface IRoomStore
 public interface IParticipantStore
 {
     Task<Participant?> GetByIdAsync(string id, CancellationToken ct = default);
-    Task<IReadOnlyList<Participant>> GetByRoomAsync(string roomId, CancellationToken ct = default);
+    Task<IReadOnlyList<Participant>> GetByConferenceAsync(string conferenceId, CancellationToken ct = default);
     Task AddAsync(Participant p, CancellationToken ct = default);
     Task UpdateAsync(Participant p, CancellationToken ct = default);
-    Task<int> CountActiveInRoomAsync(string roomId, CancellationToken ct = default);
+    Task<int> CountActiveInConferenceAsync(string conferenceId, CancellationToken ct = default);
 }
 
 public interface IAiRoleStore
@@ -42,11 +42,20 @@ public interface IAiRoleStore
     Task DeleteAsync(string id, CancellationToken ct = default);
 }
 
+public interface IConferenceStore
+{
+    Task<Conference?> GetByIdAsync(string id, CancellationToken ct = default);
+    Task<Conference?> GetActiveByRoomAsync(string roomId, CancellationToken ct = default);
+    Task<IReadOnlyList<Conference>> GetByRoomAsync(string roomId, CancellationToken ct = default);
+    Task AddAsync(Conference conference, CancellationToken ct = default);
+    Task UpdateAsync(Conference conference, CancellationToken ct = default);
+}
+
 public interface IAiSessionStore
 {
     Task<AiSessionInfo?> GetInfoAsync(string id, CancellationToken ct = default);
     Task<AiSession?> GetAsync(string id, CancellationToken ct = default);
-    Task<IReadOnlyList<AiSessionInfo>> GetByRoomAsync(string roomId, CancellationToken ct = default);
+    Task<IReadOnlyList<AiSessionInfo>> GetByConferenceAsync(string conferenceId, CancellationToken ct = default);
     Task AddAsync(AiSession session, CancellationToken ct = default);
     Task UpdateAsync(AiSession session, CancellationToken ct = default);
 }
@@ -159,14 +168,14 @@ public sealed class InMemoryParticipantStore : IParticipantStore
     public Task<Participant?> GetByIdAsync(string id, CancellationToken ct = default) =>
         Task.FromResult(_items.TryGetValue(id, out var p) ? p : null);
 
-    public Task<IReadOnlyList<Participant>> GetByRoomAsync(string roomId, CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<Participant>>(_items.Values.Where(p => p.RoomId == roomId).ToArray());
+    public Task<IReadOnlyList<Participant>> GetByConferenceAsync(string conferenceId, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Participant>>(_items.Values.Where(p => p.ConferenceId == conferenceId).ToArray());
 
     public Task AddAsync(Participant p, CancellationToken ct = default) { _items[p.Id] = p; return Task.CompletedTask; }
     public Task UpdateAsync(Participant p, CancellationToken ct = default) { _items[p.Id] = p; return Task.CompletedTask; }
 
-    public Task<int> CountActiveInRoomAsync(string roomId, CancellationToken ct = default) =>
-        Task.FromResult(_items.Values.Count(p => p.RoomId == roomId && p.LeaveTime is null && !p.IsAi));
+    public Task<int> CountActiveInConferenceAsync(string conferenceId, CancellationToken ct = default) =>
+        Task.FromResult(_items.Values.Count(p => p.ConferenceId == conferenceId && p.LeaveTime is null && !p.IsAi));
 }
 
 public sealed class InMemoryAiRoleStore : IAiRoleStore
@@ -189,6 +198,46 @@ public sealed class InMemoryAiRoleStore : IAiRoleStore
     }
 }
 
+public sealed class InMemoryConferenceStore : IConferenceStore
+{
+    private readonly ConcurrentDictionary<string, Conference> _items = new(StringComparer.Ordinal);
+    // 保证“同一房间至多一场进行中会议”的创建原子性（对应 DB 的部分唯一索引）
+    private readonly object _createLock = new();
+
+    public Task<Conference?> GetByIdAsync(string id, CancellationToken ct = default) =>
+        Task.FromResult(_items.TryGetValue(id, out var c) ? c : null);
+
+    public Task<Conference?> GetActiveByRoomAsync(string roomId, CancellationToken ct = default) =>
+        Task.FromResult(_items.Values.FirstOrDefault(c =>
+            c.RoomId == roomId && c.Status == ConferenceStatus.InProgress));
+
+    public Task<IReadOnlyList<Conference>> GetByRoomAsync(string roomId, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Conference>>(
+            _items.Values.Where(c => c.RoomId == roomId)
+                .OrderByDescending(c => c.StartedAt)
+                .ToArray());
+
+    public Task AddAsync(Conference conference, CancellationToken ct = default)
+    {
+        lock (_createLock)
+        {
+            // 模拟 DB 部分唯一索引：同房间已有进行中场次则拒绝创建
+            var active = _items.Values.FirstOrDefault(c =>
+                c.RoomId == conference.RoomId && c.Status == ConferenceStatus.InProgress);
+            if (active is not null && conference.Status == ConferenceStatus.InProgress)
+                throw new InvalidOperationException("该房间已有进行中的会议");
+            _items[conference.Id] = conference;
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task UpdateAsync(Conference conference, CancellationToken ct = default)
+    {
+        _items[conference.Id] = conference;
+        return Task.CompletedTask;
+    }
+}
+
 public sealed class InMemoryAiSessionStore : IAiSessionStore
 {
     private readonly ConcurrentDictionary<string, AiSession> _items = new(StringComparer.Ordinal);
@@ -206,9 +255,9 @@ public sealed class InMemoryAiSessionStore : IAiSessionStore
         return ToInfo(s, role?.Name ?? string.Empty);
     }
 
-    public async Task<IReadOnlyList<AiSessionInfo>> GetByRoomAsync(string roomId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AiSessionInfo>> GetByConferenceAsync(string conferenceId, CancellationToken ct = default)
     {
-        var list = _items.Values.Where(s => s.RoomId == roomId).OrderBy(s => s.CreatedAt).ToArray();
+        var list = _items.Values.Where(s => s.ConferenceId == conferenceId).OrderBy(s => s.CreatedAt).ToArray();
         var result = new List<AiSessionInfo>(list.Length);
         foreach (var s in list)
         {
@@ -222,5 +271,5 @@ public sealed class InMemoryAiSessionStore : IAiSessionStore
     public Task UpdateAsync(AiSession session, CancellationToken ct = default) { _items[session.Id] = session; return Task.CompletedTask; }
 
     private static AiSessionInfo ToInfo(AiSession s, string roleName) => new(
-        s.Id, s.RoomId, s.AiRoleId, roleName, s.AgentInstance, s.Status, s.CustomPrompt, s.CreatedAt);
+        s.Id, s.ConferenceId, s.AiRoleId, roleName, s.AgentInstance, s.Status, s.CustomPrompt, s.CreatedAt);
 }

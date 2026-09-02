@@ -43,14 +43,14 @@ public sealed class MeetingRoom
 
 public enum MeetingStatus
 {
-    /// <summary>已预约</summary>
+    /// <summary>已预约（未到开放时间）</summary>
     Scheduled = 0,
 
-    /// <summary>进行中</summary>
-    InProgress = 1,
+    /// <summary>开放中（在预约时间窗口内，允许入会）</summary>
+    Open = 1,
 
-    /// <summary>已结束</summary>
-    Ended = 2,
+    /// <summary>已关闭（预约时间窗口已结束）</summary>
+    Closed = 2,
 
     /// <summary>已取消</summary>
     Cancelled = 3,

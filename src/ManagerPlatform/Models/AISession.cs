@@ -7,7 +7,8 @@ public sealed class AiSession
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
-    public string RoomId { get; set; } = string.Empty;
+    /// <summary>所属会议场次 Id</summary>
+    public string ConferenceId { get; set; } = string.Empty;
 
     public string AiRoleId { get; set; } = string.Empty;
 

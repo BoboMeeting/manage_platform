@@ -33,11 +33,21 @@ public sealed record JoinRoomRequest(string? Nickname = null);
 
 public sealed record JoinRoomResponse(
     string RoomId,
+    string ConferenceId,
     string RoomName,
     string LiveKitToken,
     string LiveKitUrl,
     bool IsHost,
     UserInfo? User);
+
+public sealed record ConferenceSummary(
+    string Id,
+    string RoomId,
+    string StartedByUserId,
+    ConferenceStatus Status,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? EndedAt,
+    int ActiveParticipantCount);
 
 public sealed record RoomSummary(
     string Id,
@@ -59,7 +69,7 @@ public sealed record AddAiRequest(string RoleId, string? CustomPrompt = null);
 
 public sealed record AiSessionInfo(
     string Id,
-    string RoomId,
+    string ConferenceId,
     string AiRoleId,
     string RoleName,
     string AgentInstance,

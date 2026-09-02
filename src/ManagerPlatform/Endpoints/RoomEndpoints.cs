@@ -13,7 +13,7 @@ public static class RoomEndpoints
     {
         var group = app.MapGroup("/api/rooms").WithTags("Rooms");
 
-        // 预约访谈室（需登录）：主持人创建会议
+        // 预约访谈室（需登录）：主持人创建房间
         group.MapPost("/create", async (
             CreateRoomRequest req,
             HttpContext ctx,
@@ -56,7 +56,7 @@ public static class RoomEndpoints
             return Results.Created($"/api/rooms/{room.Id}", ToSummary(room));
         }).RequireAuthorization();
 
-        // 列出我的会议
+        // 列出我的房间
         group.MapGet("/", async (HttpContext ctx, IRoomStore rooms, CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
@@ -79,11 +79,13 @@ public static class RoomEndpoints
 
         // 获取入会 token（核心接口：客户端入会）
         // 设计文档: GET /api/rooms/{roomId}/join
+        // v2.0：获取/创建当前进行中的会议场次，参会者归属场次
         group.MapGet("/{roomId}/join", async (
             string roomId,
             string? nickname,
             HttpContext ctx,
             IRoomStore rooms,
+            IConferenceStore conferences,
             IParticipantStore participants,
             IUserStore users,
             ILiveKitTokenService liveKit,
@@ -92,7 +94,7 @@ public static class RoomEndpoints
         {
             var room = await rooms.GetByIdAsync(roomId, ct);
             if (room is null) return Results.NotFound(new { error = "room not found" });
-            if (room.Status == MeetingStatus.Cancelled || room.Status == MeetingStatus.Ended)
+            if (room.Status == MeetingStatus.Cancelled || room.Status == MeetingStatus.Closed)
                 return Results.Conflict(new { error = "会议已结束或取消" });
             if (room.Locked) return Results.Conflict(new { error = "房间已锁定" });
 
@@ -101,9 +103,20 @@ public static class RoomEndpoints
                 return Results.Unauthorized();
 
             var now = DateTimeOffset.UtcNow;
-            // 仅在到达开始时间附近允许进入；提前 5 分钟可加入（用于主持人准备）
+            // 时间窗口校验：提前 5 分钟可进入（用于主持人准备）
             if (now < room.StartTime.AddMinutes(-5) && room.Status == MeetingStatus.Scheduled)
                 return Results.Conflict(new { error = "会议尚未到开放时间" });
+            // 预约时间窗口已结束 → 懒关闭房间并拒绝入会
+            if (now > room.EndTime)
+            {
+                if (room.Status == MeetingStatus.Open || room.Status == MeetingStatus.Scheduled)
+                {
+                    room.Status = MeetingStatus.Closed;
+                    room.UpdatedAt = now;
+                    await rooms.UpdateAsync(room, ct);
+                }
+                return Results.Conflict(new { error = "预约时间已结束" });
+            }
 
             var user = await users.GetByIdAsync(cu.UserId, ct);
             if (user is null) return Results.NotFound(new { error = "user not found" });
@@ -114,26 +127,49 @@ public static class RoomEndpoints
             UserInfo? userInfo = AuthEndpoints.ToInfo(user);
             bool isHost = user.Id == room.HostUserId;
 
-            // 容量校验（仅统计人类在线参会者）
-            var activeCount = await participants.CountActiveInRoomAsync(room.Id, ct);
+            // 房间 Scheduled → Open（窗口已开放）
+            if (room.Status == MeetingStatus.Scheduled)
+            {
+                room.Status = MeetingStatus.Open;
+                room.UpdatedAt = now;
+                await rooms.UpdateAsync(room, ct);
+            }
+
+            // 获取/创建当前进行中会议场次：无则开启一场新会议
+            var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+            if (conf is null)
+            {
+                conf = new Conference
+                {
+                    RoomId = room.Id,
+                    StartedByUserId = user.Id,
+                    Status = ConferenceStatus.InProgress,
+                    StartedAt = now,
+                };
+                try
+                {
+                    await conferences.AddAsync(conf, ct);
+                }
+                catch (InvalidOperationException)
+                {
+                    // 并发下另一请求已为该房间创建进行中场次，复用之（对应 DB 唯一约束 23505）
+                    conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+                    if (conf is null) return Results.Conflict(new { error = "会议创建失败，请重试" });
+                }
+            }
+
+            // 容量校验（仅统计人类在线参会者，按场次）
+            var activeCount = await participants.CountActiveInConferenceAsync(conf.Id, ct);
             if (activeCount >= room.MaxParticipants)
                 return Results.Conflict(new { error = "房间人数已满" });
 
             // 第一个入会者自动成为主持人（若与预约主持人不同，则以预约为准）
             var role = (isHost || activeCount == 0) ? ParticipantRole.Host : ParticipantRole.Member;
 
-            // 房间进入"进行中"
-            if (room.Status == MeetingStatus.Scheduled)
-            {
-                room.Status = MeetingStatus.InProgress;
-                room.UpdatedAt = now;
-                await rooms.UpdateAsync(room, ct);
-            }
-
             var participant = new Participant
             {
-                RoomId = room.Id,
-                UserId = cu?.UserId,
+                ConferenceId = conf.Id,
+                UserId = cu.UserId,
                 Nickname = displayName,
                 JoinTime = now,
                 IsAi = false,
@@ -144,7 +180,47 @@ public static class RoomEndpoints
             var token = liveKit.CreateClientToken(room.RoomName, identity, displayName, isHost: role == ParticipantRole.Host);
 
             return Results.Ok(new JoinRoomResponse(
-                room.Id, room.RoomName, token, lkOpt.Value.Url, role == ParticipantRole.Host, userInfo));
+                room.Id, conf.Id, room.RoomName, token, lkOpt.Value.Url, role == ParticipantRole.Host, userInfo));
+        }).RequireAuthorization();
+
+        // 列出该房间的所有会议场次（历史 + 当前）
+        group.MapGet("/{id}/conferences", async (
+            string id,
+            HttpContext ctx,
+            IRoomStore rooms,
+            IConferenceStore conferences,
+            IParticipantStore participants,
+            CancellationToken ct) =>
+        {
+            if (ctx.User.ToCurrentUser() is null) return Results.Unauthorized();
+            var room = await rooms.GetByIdAsync(id, ct);
+            if (room is null) return Results.NotFound(new { error = "room not found" });
+            var list = await conferences.GetByRoomAsync(id, ct);
+            var result = new List<ConferenceSummary>(list.Count);
+            foreach (var c in list)
+            {
+                var count = await participants.CountActiveInConferenceAsync(c.Id, ct);
+                result.Add(ToConfSummary(c, count));
+            }
+            return Results.Ok(result);
+        }).RequireAuthorization();
+
+        // 获取当前进行中的会议场次（无则 404）
+        group.MapGet("/{id}/conferences/active", async (
+            string id,
+            HttpContext ctx,
+            IRoomStore rooms,
+            IConferenceStore conferences,
+            IParticipantStore participants,
+            CancellationToken ct) =>
+        {
+            if (ctx.User.ToCurrentUser() is null) return Results.Unauthorized();
+            var room = await rooms.GetByIdAsync(id, ct);
+            if (room is null) return Results.NotFound(new { error = "room not found" });
+            var conf = await conferences.GetActiveByRoomAsync(id, ct);
+            if (conf is null) return Results.NotFound(new { error = "当前无进行中的会议" });
+            var count = await participants.CountActiveInConferenceAsync(conf.Id, ct);
+            return Results.Ok(ToConfSummary(conf, count));
         }).RequireAuthorization();
 
         // 添加 AI 角色（仅主持人）
@@ -153,6 +229,7 @@ public static class RoomEndpoints
             AddAiRequest req,
             HttpContext ctx,
             IRoomStore rooms,
+            IConferenceStore conferences,
             IAiRoleStore aiRoles,
             IAiSessionStore aiSessions,
             IParticipantStore participants,
@@ -166,13 +243,17 @@ public static class RoomEndpoints
             if (cu.UserId != room.HostUserId && !cu.IsAtLeast(UserRole.Operator))
                 return Results.Forbid();
 
+            // AI 归属当前进行中的会议场次；会议未开始则拒绝
+            var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+            if (conf is null) return Results.Conflict(new { error = "会议尚未开始，请先入会开启会议" });
+
             var role = await aiRoles.GetByIdAsync(req.RoleId, ct);
             if (role is null) return Results.BadRequest(new { error = "AI 角色不存在" });
 
             var now = DateTimeOffset.UtcNow;
             var session = new AiSession
             {
-                RoomId = room.Id,
+                ConferenceId = conf.Id,
                 AiRoleId = role.Id,
                 AgentInstance = "agent-" + Guid.NewGuid().ToString("N")[..8],
                 CustomPrompt = req.CustomPrompt,
@@ -183,7 +264,7 @@ public static class RoomEndpoints
             // 预登记 AI 参会者，便于客户端参会者列表展示
             var aiParticipant = new Participant
             {
-                RoomId = room.Id,
+                ConferenceId = conf.Id,
                 Nickname = role.Name,
                 IsAi = true,
                 Role = ParticipantRole.Member,
@@ -194,7 +275,7 @@ public static class RoomEndpoints
 
             // 真正的 Agent 入会由 Agent Service 异步处理；此处仅返回调度结果
             return Results.Created($"/api/rooms/{roomId}/ai/{session.Id}",
-                new AiSessionInfo(session.Id, session.RoomId, session.AiRoleId, role.Name,
+                new AiSessionInfo(session.Id, session.ConferenceId, session.AiRoleId, role.Name,
                     session.AgentInstance, session.Status, session.CustomPrompt, session.CreatedAt));
         }).RequireAuthorization();
 
@@ -204,6 +285,7 @@ public static class RoomEndpoints
             string aiSessionId,
             HttpContext ctx,
             IRoomStore rooms,
+            IConferenceStore conferences,
             IAiSessionStore aiSessions,
             IParticipantStore participants,
             CancellationToken ct) =>
@@ -215,7 +297,11 @@ public static class RoomEndpoints
                 return Results.Forbid();
 
             var session = await aiSessions.GetAsync(aiSessionId, ct);
-            if (session is null || session.RoomId != roomId)
+            if (session is null) return Results.NotFound(new { error = "ai session not found" });
+
+            // 校验该 AI 会话属于本房间（经由场次关联）
+            var conf = await conferences.GetByIdAsync(session.ConferenceId, ct);
+            if (conf is null || conf.RoomId != roomId)
                 return Results.NotFound(new { error = "ai session not found" });
 
             session.Status = AISessionStatus.Ended;
@@ -223,7 +309,7 @@ public static class RoomEndpoints
             await aiSessions.UpdateAsync(session, ct);
 
             // 标记 AI 参会者离会
-            var ps = await participants.GetByRoomAsync(roomId, ct);
+            var ps = await participants.GetByConferenceAsync(conf.Id, ct);
             var aiP = ps.FirstOrDefault(p => p.AiSessionId == aiSessionId);
             if (aiP is not null)
             {
@@ -234,13 +320,16 @@ public static class RoomEndpoints
             return Results.Ok(new { ok = true });
         }).RequireAuthorization();
 
-        // 查询会议中的 AI 列表
+        // 查询当前会议中的 AI 列表
         group.MapGet("/{roomId}/ai", async (
             string roomId,
+            IConferenceStore conferences,
             IAiSessionStore aiSessions,
             CancellationToken ct) =>
         {
-            var list = await aiSessions.GetByRoomAsync(roomId, ct);
+            var conf = await conferences.GetActiveByRoomAsync(roomId, ct);
+            if (conf is null) return Results.Ok(Array.Empty<AiSessionInfo>());
+            var list = await aiSessions.GetByConferenceAsync(conf.Id, ct);
             return Results.Ok(list);
         }).RequireAuthorization();
 
@@ -285,4 +374,7 @@ public static class RoomEndpoints
     private static RoomSummary ToSummary(MeetingRoom r) => new(
         r.Id, r.Title, r.RoomName, r.HostUserId, r.HostNickname,
         r.StartTime, r.EndTime, r.MaxParticipants, r.Status, r.Locked, r.InviteCode, r.CreatedAt);
+
+    private static ConferenceSummary ToConfSummary(Conference c, int activeCount) => new(
+        c.Id, c.RoomId, c.StartedByUserId, c.Status, c.StartedAt, c.EndedAt, activeCount);
 }

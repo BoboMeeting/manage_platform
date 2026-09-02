@@ -177,6 +177,60 @@ public static class AdminEndpoints
             return Results.Ok(new { ok = true });
         });
 
+
+
+        group.MapPost("/ai-roles/", async (
+            AiRoleRequest req,
+            HttpContext ctx,
+            IAiRoleStore store,
+            CancellationToken ct) =>
+        {
+            if (ctx.User.ToCurrentUser() is not { } cu)
+                return Results.Unauthorized();
+            if (string.IsNullOrWhiteSpace(req.Name) || string.IsNullOrWhiteSpace(req.PromptTemplate))
+                return Results.BadRequest(new { error = "name/promptTemplate 必填" });
+
+            var role = new AIRole
+            {
+                Name = req.Name.Trim(),
+                Description = req.Description,
+                PromptTemplate = req.PromptTemplate,
+                TtsConfig = req.TtsConfig,
+                AvatarUrl = req.AvatarUrl,
+                CreatedBy = cu.UserId,
+            };
+            await store.AddAsync(role, ct);
+            return Results.Created($"/api/admin/ai-roles/{role.Id}", role);
+        });
+
+        group.MapPut("/ai-roles/{id}", async (
+            string id,
+            AiRoleRequest req,
+            IAiRoleStore store,
+            CancellationToken ct) =>
+        {
+            var role = await store.GetByIdAsync(id, ct);
+            if (role is null) return Results.NotFound(new { error = "ai role not found" });
+
+            role.Name = req.Name.Trim();
+            role.Description = req.Description;
+            role.PromptTemplate = req.PromptTemplate;
+            role.TtsConfig = req.TtsConfig;
+            role.AvatarUrl = req.AvatarUrl;
+            role.UpdatedAt = DateTimeOffset.UtcNow;
+            await store.UpdateAsync(role, ct);
+            return Results.Ok(role);
+        });
+
+        group.MapDelete("/ai-roles/{id}", async (
+            string id,
+            IAiRoleStore store,
+            CancellationToken ct) =>
+        {
+            await store.DeleteAsync(id, ct);
+            return Results.Ok(new { ok = true });
+        });
+
         return app;
     }
 
