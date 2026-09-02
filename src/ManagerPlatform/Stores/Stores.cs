@@ -67,7 +67,7 @@ public sealed class InMemoryUserStore : IUserStore
     private readonly ConcurrentDictionary<string, User> _byId = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, User> _byAccount = new(StringComparer.OrdinalIgnoreCase);
     // 跨多索引更新时使用同一锁，保证读改写序列原子，避免并发下账号变更导致索引不一致
-    private readonly object _updateLock = new();
+    private readonly Lock _updateLock = new();
 
     public Task<User?> GetByIdAsync(string id, CancellationToken ct = default) =>
         Task.FromResult(_byId.TryGetValue(id, out var u) ? u : null);
@@ -85,7 +85,7 @@ public sealed class InMemoryUserStore : IUserStore
         }
         if (status.HasValue) q = q.Where(u => u.Status == status.Value);
         if (role.HasValue) q = q.Where(u => u.Role == role.Value);
-        return Task.FromResult<IReadOnlyList<User>>(q.OrderByDescending(u => u.CreatedAt).ToArray());
+        return Task.FromResult<IReadOnlyList<User>>([.. q.OrderByDescending(u => u.CreatedAt)]);
     }
 
     public Task<bool> AddAsync(User user, CancellationToken ct = default)
@@ -140,7 +140,7 @@ public sealed class InMemoryRoomStore : IRoomStore
         IEnumerable<MeetingRoom> q = _byId.Values;
         if (!string.IsNullOrEmpty(hostUserId)) q = q.Where(r => r.HostUserId == hostUserId);
         if (status.HasValue) q = q.Where(r => r.Status == status.Value);
-        return Task.FromResult<IReadOnlyList<MeetingRoom>>(q.OrderByDescending(r => r.StartTime).ToArray());
+        return Task.FromResult<IReadOnlyList<MeetingRoom>>([.. q.OrderByDescending(r => r.StartTime)]);
     }
 
     public Task AddAsync(MeetingRoom room, CancellationToken ct = default)
@@ -158,7 +158,7 @@ public sealed class InMemoryRoomStore : IRoomStore
     }
 
     public Task<IReadOnlyList<MeetingRoom>> GetAllAsync(CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<MeetingRoom>>(_byId.Values.OrderByDescending(r => r.StartTime).ToArray());
+        Task.FromResult<IReadOnlyList<MeetingRoom>>([.. _byId.Values.OrderByDescending(r => r.StartTime)]);
 }
 
 public sealed class InMemoryParticipantStore : IParticipantStore
@@ -169,7 +169,7 @@ public sealed class InMemoryParticipantStore : IParticipantStore
         Task.FromResult(_items.TryGetValue(id, out var p) ? p : null);
 
     public Task<IReadOnlyList<Participant>> GetByConferenceAsync(string conferenceId, CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<Participant>>(_items.Values.Where(p => p.ConferenceId == conferenceId).ToArray());
+        Task.FromResult<IReadOnlyList<Participant>>([.. _items.Values.Where(p => p.ConferenceId == conferenceId)]);
 
     public Task AddAsync(Participant p, CancellationToken ct = default) { _items[p.Id] = p; return Task.CompletedTask; }
     public Task UpdateAsync(Participant p, CancellationToken ct = default) { _items[p.Id] = p; return Task.CompletedTask; }
@@ -186,7 +186,7 @@ public sealed class InMemoryAiRoleStore : IAiRoleStore
         Task.FromResult(_items.TryGetValue(id, out var r) ? r : null);
 
     public Task<IReadOnlyList<AIRole>> GetAllAsync(CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<AIRole>>(_items.Values.OrderByDescending(r => r.CreatedAt).ToArray());
+        Task.FromResult<IReadOnlyList<AIRole>>([.. _items.Values.OrderByDescending(r => r.CreatedAt)]);
 
     public Task AddAsync(AIRole role, CancellationToken ct = default) { _items[role.Id] = role; return Task.CompletedTask; }
     public Task UpdateAsync(AIRole role, CancellationToken ct = default) { _items[role.Id] = role; return Task.CompletedTask; }
@@ -201,8 +201,8 @@ public sealed class InMemoryAiRoleStore : IAiRoleStore
 public sealed class InMemoryConferenceStore : IConferenceStore
 {
     private readonly ConcurrentDictionary<string, Conference> _items = new(StringComparer.Ordinal);
-    // 保证“同一房间至多一场进行中会议”的创建原子性（对应 DB 的部分唯一索引）
-    private readonly object _createLock = new();
+    
+    private readonly Lock _createLock = new();
 
     public Task<Conference?> GetByIdAsync(string id, CancellationToken ct = default) =>
         Task.FromResult(_items.TryGetValue(id, out var c) ? c : null);
@@ -213,9 +213,8 @@ public sealed class InMemoryConferenceStore : IConferenceStore
 
     public Task<IReadOnlyList<Conference>> GetByRoomAsync(string roomId, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<Conference>>(
-            _items.Values.Where(c => c.RoomId == roomId)
-                .OrderByDescending(c => c.StartedAt)
-                .ToArray());
+            [.. _items.Values.Where(c => c.RoomId == roomId)
+                .OrderByDescending(c => c.StartedAt)]);
 
     public Task AddAsync(Conference conference, CancellationToken ct = default)
     {
@@ -233,20 +232,23 @@ public sealed class InMemoryConferenceStore : IConferenceStore
 
     public Task UpdateAsync(Conference conference, CancellationToken ct = default)
     {
-        _items[conference.Id] = conference;
+        // 与 AddAsync 共用 _createLock：状态转换（如 InProgress→Ended）须与新建检查互斥，
+        // 否则并发下会出现"旧会议刚结束、新会议却被拒绝创建"的竞态
+        lock (_createLock)
+        {
+            _items[conference.Id] = conference;
+        }
         return Task.CompletedTask;
     }
 }
 
-public sealed class InMemoryAiSessionStore : IAiSessionStore
+public sealed class InMemoryAiSessionStore(IAiRoleStore roleStore) : IAiSessionStore
 {
     private readonly ConcurrentDictionary<string, AiSession> _items = new(StringComparer.Ordinal);
-    private readonly IAiRoleStore _roleStore;
+    private readonly IAiRoleStore _roleStore = roleStore;
 
-    public InMemoryAiSessionStore(IAiRoleStore roleStore) => _roleStore = roleStore;
-
-    public async Task<AiSession?> GetAsync(string id, CancellationToken ct = default) =>
-        _items.TryGetValue(id, out var s) ? s : null;
+    public Task<AiSession?> GetAsync(string id, CancellationToken ct = default) =>
+        Task.FromResult(_items.TryGetValue(id, out var s) ? s : null);
 
     public async Task<AiSessionInfo?> GetInfoAsync(string id, CancellationToken ct = default)
     {
