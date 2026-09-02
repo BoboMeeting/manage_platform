@@ -54,7 +54,7 @@ public static class ConferenceEndpoints
             return Results.Ok(list);
         }).RequireAuthorization();
 
-        // 离会：标记当前用户参会者离会；若为最后一个在会者，自动结束该场次
+        // 离会：标记当前用户参会者离会；若为最后一个在会者，进入 PendingClose 宽限期
         group.MapPost("/{id}/leave", async (
             string id,
             HttpContext ctx,
@@ -68,7 +68,7 @@ public static class ConferenceEndpoints
 
             var conf = await conferences.GetByIdAsync(id, ct);
             if (conf is null) return Results.NotFound(new { error = "conference not found" });
-            if (conf.Status == ConferenceStatus.Ended)
+            if (conf.Status == ConferenceStatus.Ended || conf.Status == ConferenceStatus.Completed)
                 return Results.Conflict(new { error = "会议已结束" });
 
             var ps = await participants.GetByConferenceAsync(conf.Id, ct);
@@ -78,30 +78,74 @@ public static class ConferenceEndpoints
             me.LeaveTime = DateTimeOffset.UtcNow;
             await participants.UpdateAsync(me, ct);
 
-            // 若该场次已无在会者，结束会议并清理其下 AI 会话
+            // 若该场次已无在会者，进入 PendingClose 宽限期（60s 内可回场）
             var remaining = await participants.CountActiveInConferenceAsync(conf.Id, ct);
-            var conferenceEnded = false;
-            if (remaining == 0)
+            var enteredPendingClose = false;
+            if (remaining == 0 && conf.Status == ConferenceStatus.InProgress)
             {
-                conf.Status = ConferenceStatus.Ended;
-                conf.EndedAt = DateTimeOffset.UtcNow;
+                conf.Status = ConferenceStatus.PendingClose;
+                conf.PendingCloseExpiresAt = DateTimeOffset.UtcNow.AddSeconds(60);
                 await conferences.UpdateAsync(conf, ct);
-
-                var aiList = await aiSessions.GetByConferenceAsync(conf.Id, ct);
-                foreach (var info in aiList)
-                {
-                    var s = await aiSessions.GetAsync(info.Id, ct);
-                    if (s is not null && s.Status != AISessionStatus.Ended)
-                    {
-                        s.Status = AISessionStatus.Ended;
-                        s.EndedAt = DateTimeOffset.UtcNow;
-                        await aiSessions.UpdateAsync(s, ct);
-                    }
-                }
-                conferenceEnded = true;
+                enteredPendingClose = true;
             }
 
-            return Results.Ok(new { ok = true, conferenceEnded });
+            return Results.Ok(new { ok = true, enteredPendingClose });
+        }).RequireAuthorization();
+
+        // 主动结束会议（Completed 唯一入口）：仅会议发起人或管理员角色可调用
+        group.MapPost("/{id}/end", async (
+            string id,
+            HttpContext ctx,
+            IConferenceStore conferences,
+            IParticipantStore participants,
+            IAiSessionStore aiSessions,
+            CancellationToken ct) =>
+        {
+            if (ctx.User.ToCurrentUser() is not { } cu)
+                return Results.Unauthorized();
+
+            var conf = await conferences.GetByIdAsync(id, ct);
+            if (conf is null) return Results.NotFound(new { error = "conference not found" });
+            if (conf.Status == ConferenceStatus.Ended || conf.Status == ConferenceStatus.Completed)
+                return Results.Conflict(new { error = "会议已结束" });
+
+            // 权限：会议发起人（StartedByUserId）或管理员（Operator+）可主动结束
+            bool isHost = cu.UserId == conf.StartedByUserId;
+            bool isAdmin = cu.IsAtLeast(UserRole.Operator);
+            if (!isHost && !isAdmin)
+                return Results.Forbid();
+
+            // 强制终态：Completed（主持人主动结束）
+            var now = DateTimeOffset.UtcNow;
+            conf.Status = ConferenceStatus.Completed;
+            conf.EndedAt = now;
+            conf.PendingCloseExpiresAt = null;
+            conf.WaitingExpiresAt = null;
+
+            // 标记所有人类参会者离会（保证计数归零）
+            var pList = await participants.GetByConferenceAsync(conf.Id, ct);
+            foreach (var p in pList.Where(p => p.LeaveTime is null && !p.IsAi))
+            {
+                p.LeaveTime = now;
+                await participants.UpdateAsync(p, ct);
+            }
+
+            // 清理 AI 会话
+            var aiList = await aiSessions.GetByConferenceAsync(conf.Id, ct);
+            foreach (var info in aiList)
+            {
+                var s = await aiSessions.GetAsync(info.Id, ct);
+                if (s is not null && s.Status != AISessionStatus.Ended)
+                {
+                    s.Status = AISessionStatus.Ended;
+                    s.EndedAt = now;
+                    await aiSessions.UpdateAsync(s, ct);
+                }
+            }
+
+            await conferences.UpdateAsync(conf, ct);
+
+            return Results.Ok(new { ok = true, endedReason = "completed" });
         }).RequireAuthorization();
 
         return app;

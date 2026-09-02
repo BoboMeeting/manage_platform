@@ -89,6 +89,7 @@ public static class RoomEndpoints
             IParticipantStore participants,
             IUserStore users,
             ILiveKitTokenService liveKit,
+            IAiSessionStore aiSessions,
             IOptions<LiveKitOptions> lkOpt,
             CancellationToken ct) =>
         {
@@ -135,16 +136,56 @@ public static class RoomEndpoints
                 await rooms.UpdateAsync(room, ct);
             }
 
-            // 获取/创建当前进行中会议场次：无则开启一场新会议
+            // 获取/创建当前非终态会议场次：无则开启一场新会议
             var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+
+            // 懒超时检查：若取到的场次已经超时，先终态化后丢弃重开
+            if (conf is not null)
+            {
+                var stale = false;
+                if (conf.Status == ConferenceStatus.Waiting
+                    && conf.WaitingExpiresAt.HasValue
+                    && now > conf.WaitingExpiresAt.Value)
+                {
+                    conf.Status = ConferenceStatus.Ended;
+                    conf.EndedAt = now;
+                    await conferences.UpdateAsync(conf, ct);
+                    stale = true;
+                }
+                else if (conf.Status == ConferenceStatus.PendingClose
+                         && conf.PendingCloseExpiresAt.HasValue
+                         && now > conf.PendingCloseExpiresAt.Value)
+                {
+                    conf.Status = ConferenceStatus.Ended;
+                    conf.EndedAt = now;
+                    // 清理挂起 AI 会话
+                    var staleAiList = await aiSessions.GetByConferenceAsync(conf.Id, ct);
+                    foreach (var info in staleAiList)
+                    {
+                        var s = await aiSessions.GetAsync(info.Id, ct);
+                        if (s is not null && s.Status != AISessionStatus.Ended)
+                        {
+                            s.Status = AISessionStatus.Ended;
+                            s.EndedAt = now;
+                            await aiSessions.UpdateAsync(s, ct);
+                        }
+                    }
+                    await conferences.UpdateAsync(conf, ct);
+                    stale = true;
+                }
+
+                if (stale) conf = null;
+            }
+
             if (conf is null)
             {
                 conf = new Conference
                 {
                     RoomId = room.Id,
                     StartedByUserId = user.Id,
-                    Status = ConferenceStatus.InProgress,
+                    Status = ConferenceStatus.Waiting,
                     StartedAt = now,
+                    WaitingExpiresAt = now.AddSeconds(30), // 30s 内无人入会 → 后台 Ended
                 };
                 try
                 {
@@ -152,10 +193,22 @@ public static class RoomEndpoints
                 }
                 catch (InvalidOperationException)
                 {
-                    // 并发下另一请求已为该房间创建进行中场次，复用之（对应 DB 唯一约束 23505）
+                    // 并发下另一请求已为该房间创建非终态场次，复用之（对应 DB 唯一约束 23505）
                     conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
                     if (conf is null) return Results.Conflict(new { error = "会议创建失败，请重试" });
                 }
+            }
+
+            // 状态修复：根据当前场次状态恢复到可入会的 InProgress
+            // 1) Waiting → 首位用户加入，切换到 InProgress
+            // 2) PendingClose → 用户在宽限期内回来，恢复到 InProgress
+            if (conf.Status == ConferenceStatus.Waiting || conf.Status == ConferenceStatus.PendingClose)
+            {
+                conf.Status = ConferenceStatus.InProgress;
+                if (conf.Status == ConferenceStatus.Waiting)
+                    conf.StartedAt = now; // 真正的会议开始时间以首次入会为准
+                conf.PendingCloseExpiresAt = null;
+                await conferences.UpdateAsync(conf, ct);
             }
 
             // 容量校验（仅统计人类在线参会者，按场次）

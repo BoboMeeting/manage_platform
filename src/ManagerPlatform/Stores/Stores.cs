@@ -49,6 +49,12 @@ public interface IConferenceStore
     Task<IReadOnlyList<Conference>> GetByRoomAsync(string roomId, CancellationToken ct = default);
     Task AddAsync(Conference conference, CancellationToken ct = default);
     Task UpdateAsync(Conference conference, CancellationToken ct = default);
+
+    /// <summary>
+    /// 获取所有非终态 Conference（Waiting / InProgress / PendingClose）。
+    /// 供清理服务使用；生产 PostgreSQL 实现按状态索引过滤即可。
+    /// </summary>
+    Task<IReadOnlyList<Conference>> GetAllNonTerminalAsync(CancellationToken ct = default);
 }
 
 public interface IAiSessionStore
@@ -209,7 +215,9 @@ public sealed class InMemoryConferenceStore : IConferenceStore
 
     public Task<Conference?> GetActiveByRoomAsync(string roomId, CancellationToken ct = default) =>
         Task.FromResult(_items.Values.FirstOrDefault(c =>
-            c.RoomId == roomId && c.Status == ConferenceStatus.InProgress));
+            c.RoomId == roomId && (c.Status == ConferenceStatus.Waiting
+                                   || c.Status == ConferenceStatus.InProgress
+                                   || c.Status == ConferenceStatus.PendingClose)));
 
     public Task<IReadOnlyList<Conference>> GetByRoomAsync(string roomId, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<Conference>>(
@@ -220,10 +228,15 @@ public sealed class InMemoryConferenceStore : IConferenceStore
     {
         lock (_createLock)
         {
-            // 模拟 DB 部分唯一索引：同房间已有进行中场次则拒绝创建
+            // 模拟 DB 部分唯一索引：同房间已有非终态场次（Waiting/InProgress/PendingClose）则拒绝创建
             var active = _items.Values.FirstOrDefault(c =>
-                c.RoomId == conference.RoomId && c.Status == ConferenceStatus.InProgress);
-            if (active is not null && conference.Status == ConferenceStatus.InProgress)
+                c.RoomId == conference.RoomId && (
+                    c.Status == ConferenceStatus.Waiting
+                    || c.Status == ConferenceStatus.InProgress
+                    || c.Status == ConferenceStatus.PendingClose));
+            if (active is not null && (conference.Status == ConferenceStatus.Waiting
+                                       || conference.Status == ConferenceStatus.InProgress
+                                       || conference.Status == ConferenceStatus.PendingClose))
                 throw new InvalidOperationException("该房间已有进行中的会议");
             _items[conference.Id] = conference;
         }
@@ -240,6 +253,13 @@ public sealed class InMemoryConferenceStore : IConferenceStore
         }
         return Task.CompletedTask;
     }
+
+    public Task<IReadOnlyList<Conference>> GetAllNonTerminalAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Conference>>(_items.Values.Where(c =>
+                c.Status == ConferenceStatus.Waiting
+                || c.Status == ConferenceStatus.InProgress
+                || c.Status == ConferenceStatus.PendingClose)
+            .ToArray());
 }
 
 public sealed class InMemoryAiSessionStore(IAiRoleStore roleStore) : IAiSessionStore
