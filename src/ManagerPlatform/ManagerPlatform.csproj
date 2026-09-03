@@ -17,6 +17,13 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.*" />
     <!-- API 文档 UI（Scalar） -->
     <PackageReference Include="Scalar.AspNetCore" Version="2.0.*" />
+    <!-- EF Core + PostgreSQL 持久化 -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.*">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.*" />
   </ItemGroup>
 
 </Project>

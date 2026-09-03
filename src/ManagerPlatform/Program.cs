@@ -1,5 +1,7 @@
 using System.Text;
 using ManagerPlatform.Auth;
+using ManagerPlatform.Data;
+
 using ManagerPlatform.Endpoints;
 using ManagerPlatform.LiveKit;
 using ManagerPlatform.Models;
@@ -8,6 +10,7 @@ using ManagerPlatform.Stores;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
 
@@ -75,13 +78,20 @@ var dpKeys = Path.Combine(builder.Environment.ContentRootPath, ".dp-keys");
 Directory.CreateDirectory(dpKeys);
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(dpKeys));
 
-// ===== 业务服务注册（内存存储，生产替换为 PostgreSQL 实现）=====
-builder.Services.AddSingleton<IUserStore, InMemoryUserStore>();
-builder.Services.AddSingleton<IRoomStore, InMemoryRoomStore>();
-builder.Services.AddSingleton<IConferenceStore, InMemoryConferenceStore>();
-builder.Services.AddSingleton<IParticipantStore, InMemoryParticipantStore>();
-builder.Services.AddSingleton<IAiRoleStore, InMemoryAiRoleStore>();
-builder.Services.AddSingleton<IAiSessionStore, InMemoryAiSessionStore>();
+// ===== 业务服务注册（PostgreSQL + EF Core 持久化）=====
+// DbContext 与 Store 均为 Scoped：每请求一个上下文，符合 EF Core 使用约定；
+// 后台 ConferenceCleanupService 通过 CreateScope 取用，无需额外处理。
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException("未配置数据库连接字符串 ConnectionStrings:DefaultConnection");
+builder.Services.AddDbContext<AppDbContext>(opt =>
+    opt.UseNpgsql(connectionString));
+// 注册 EF Core 各 Store（Scoped）
+builder.Services.AddScoped<IUserStore, EfUserStore>();
+builder.Services.AddScoped<IRoomStore, EfRoomStore>();
+builder.Services.AddScoped<IConferenceStore, EfConferenceStore>();
+builder.Services.AddScoped<IParticipantStore, EfParticipantStore>();
+builder.Services.AddScoped<IAiRoleStore, EfAiRoleStore>();
+builder.Services.AddScoped<IAiSessionStore, EfAiSessionStore>();
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton<ILiveKitTokenService, LiveKitTokenService>();
 
@@ -90,6 +100,13 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
+
+// ===== 数据库初始化：启动期应用迁移（生产推荐该方式）=====
+await using (var scope = app.Services.CreateAsyncScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+}
 
 // 初始化种子数据：超级管理员 + 预置 AI 角色
 await SeedAsync(app.Services);
