@@ -3,7 +3,7 @@
 # ============================================================================
 # 阶段 1：构建
 # ============================================================================
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.301 AS build
 WORKDIR /src
 
 # 先拷 csproj 利用层缓存恢复 NuGet（依赖变化时只重新 restore 一次）
@@ -20,7 +20,7 @@ RUN dotnet publish src/ManagerPlatform/ManagerPlatform.csproj \
 # ============================================================================
 # 阶段 2：运行时镜像（仅包含发布产物）
 # ============================================================================
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.9 AS runtime
 WORKDIR /app
 
 ENV ASPNETCORE_ENVIRONMENT=Production
