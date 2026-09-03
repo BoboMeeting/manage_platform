@@ -1,0 +1,84 @@
+services:
+  # ============================================================================
+  # 后端服务：.NET 10 Web API
+  # ============================================================================
+  backend:
+    # 强制 amd64 平台，避免在 x86 服务器上拉到 arm64 镜像导致 exec format error
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bobomeet-manager-backend:latest
+    container_name: bobomeet-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-5080}:5080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5080
+
+      # PostgreSQL 连接（指向同 compose 的 postgres 服务）
+      ConnectionStrings__DefaultConnection: >-
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-bobomeet_manager};
+        Username=${POSTGRES_USER:-admin};Password=${POSTGRES_PASSWORD:-admin123};
+        Include Error Detail=true
+
+      # JWT 配置（生产环境必须通过 .env 覆盖 Secret）
+      Jwt__Issuer: ${JWT_ISSUER:-BoboMeet.ManagerPlatform}
+      Jwt__Audience: ${JWT_AUDIENCE:-BoboMeet.Client}
+      Jwt__Secret: ${JWT_SECRET:?必须在 .env 中提供 JWT_SECRET，建议 32 字节以上}
+      Jwt__ExpiresSeconds: ${JWT_EXPIRES_SECONDS:-604800}
+
+      # LiveKit（外部服务，需在 .env 中指定真实地址）
+      LiveKit__Url: ${LIVEKIT_URL:?必须在 .env 中提供 LIVEKIT_URL，例如 ws://livekit.example.com:7880}
+      LiveKit__ApiKey: ${LIVEKIT_API_KEY:-devkey}
+      LiveKit__ApiSecret: ${LIVEKIT_API_SECRET:?必须在 .env 中提供 LIVEKIT_API_SECRET}
+    volumes:
+      # DataProtection 密钥持久化（避免重启容器后旧 cookie 失效）
+      - dp-keys:/app/.dp-keys
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - bobomeet
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # PostgreSQL 数据库
+  # ============================================================================
+  postgres:
+    image: postgres:17-alpine
+    platform: linux/amd64
+    container_name: bobomeet-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bobomeet_manager}
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin123}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # 不暴露端口到宿主机，仅容器网络内可访问（提升安全性）
+    # 如需从宿主机直接连接 DB 调试，取消下面注释
+    # ports:
+    #   - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-bobomeet_manager}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - bobomeet
+
+volumes:
+  postgres-data:
+  dp-keys:
+
+networks:
+  bobomeet:
+    driver: bridge
