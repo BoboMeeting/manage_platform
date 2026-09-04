@@ -66,19 +66,6 @@ public interface IAiSessionStore
     Task UpdateAsync(AiSession session, CancellationToken ct = default);
 }
 
-/// <summary>LiveKit 服务配置仓储（数据库单例记录；降级兜底为 appsettings.json 配置）。</summary>
-public interface ILiveKitConfigStore
-{
-    /// <summary>获取当前配置（单例记录）；若库中无记录则返回 null。</summary>
-    Task<LiveKitConfig?> GetAsync(CancellationToken ct = default);
-
-    /// <summary>
-    /// 保存配置（upsert 语义：无记录则插入，有记录则更新）。
-    /// 返回最终持久化的实体。
-    /// </summary>
-    Task<LiveKitConfig> SetAsync(LiveKitConfig config, CancellationToken ct = default);
-}
-
 // ==================== 内存实现 ====================
 
 public sealed class InMemoryUserStore : IUserStore

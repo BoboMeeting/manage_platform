@@ -1,7 +1,7 @@
 using ManagerPlatform.Auth;
-using ManagerPlatform.LiveKit;
 using ManagerPlatform.Models;
 using ManagerPlatform.Options;
+using ManagerPlatform.Services;
 using ManagerPlatform.Stores;
 using Microsoft.Extensions.Options;
 
@@ -88,9 +88,11 @@ public static class RoomEndpoints
             return Results.Ok(ToSummary(room, DateTimeOffset.UtcNow, conf));
         });
 
-        // 获取入会 token（核心接口：客户端入会）
+        // 获取入会凭证（核心接口：客户端入会）
         // 设计文档: GET /api/rooms/{roomId}/join
-        // v2.0：获取/创建当前进行中的会议场次，参会者归属场次
+        // v3.0：管理平台只做校验/场次管理，LiveKit 媒体层由调度服务负责：
+        //       调调度服务内部接口创建媒体房间并换取房间凭证(ticket)，
+        //       客户端再凭【用户 JWT + ticket】调调度服务外部接口换取 LiveKit Token。
         group.MapGet("/{roomId}/join", async (
             string roomId,
             string? nickname,
@@ -99,9 +101,9 @@ public static class RoomEndpoints
             IConferenceStore conferences,
             IParticipantStore participants,
             IUserStore users,
-            ILiveKitTokenService liveKit,
             IAiSessionStore aiSessions,
-            ILiveKitConfigProvider lkConfig,
+            ISchedulerClient scheduler,
+            IOptions<SchedulerOptions> schedulerOpt,
             CancellationToken ct) =>
         {
             var room = await rooms.GetByIdAsync(roomId, ct);
@@ -210,18 +212,6 @@ public static class RoomEndpoints
                 }
             }
 
-            // 状态修复：根据当前场次状态恢复到可入会的 InProgress
-            // 1) Waiting → 首位用户加入，切换到 InProgress
-            // 2) PendingClose → 用户在宽限期内回来，恢复到 InProgress
-            if (conf.Status == ConferenceStatus.Waiting || conf.Status == ConferenceStatus.PendingClose)
-            {
-                conf.Status = ConferenceStatus.InProgress;
-                if (conf.Status == ConferenceStatus.Waiting)
-                    conf.StartedAt = now; // 真正的会议开始时间以首次入会为准
-                conf.PendingCloseExpiresAt = null;
-                await conferences.UpdateAsync(conf, ct);
-            }
-
             // 容量校验（仅统计人类在线参会者，按场次）
             var activeCount = await participants.CountActiveInConferenceAsync(conf.Id, ct);
             if (activeCount >= room.MaxParticipants)
@@ -229,6 +219,37 @@ public static class RoomEndpoints
 
             // 第一个入会者自动成为主持人（若与预约主持人不同，则以预约为准）
             var role = (isHost || activeCount == 0) ? ParticipantRole.Host : ParticipantRole.Member;
+
+            // 调用调度服务内部接口：幂等创建 LiveKit 媒体房间 + 签发房间凭证(ticket)。
+            // 放在场次状态落库/参会者登记之前：调度失败时不产生脏数据，
+            // 场次保持 Waiting（30s 超时）/PendingClose（60s 宽限）由清理任务终态化。
+            SchedulerRoomTicket ticket;
+            try
+            {
+                ticket = await scheduler.CreateRoomTicketAsync(
+                    room.RoomName, conf.Id, identity, displayName,
+                    isHost: role == ParticipantRole.Host, ct: ct);
+            }
+            catch (SchedulerException ex)
+            {
+                return Results.Json(
+                    new { error = $"调度服务暂不可用，请稍后重试（{ex.Message}）" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+
+            //TODO: 应该通过调度的回调来检测用户真正入会或者离会
+            // 状态修复：根据当前场次状态恢复到可入会的 InProgress
+            // 1) Waiting → 首位用户加入，切换到 InProgress
+            // 2) PendingClose → 用户在宽限期内回来，恢复到 InProgress
+            var wasWaiting = conf.Status == ConferenceStatus.Waiting;
+            if (wasWaiting || conf.Status == ConferenceStatus.PendingClose)
+            {
+                conf.Status = ConferenceStatus.InProgress;
+                if (wasWaiting)
+                    conf.StartedAt = now; // 真正的会议开始时间以首次入会为准
+                conf.PendingCloseExpiresAt = null;
+                await conferences.UpdateAsync(conf, ct);
+            }
 
             var participant = new Participant
             {
@@ -241,12 +262,16 @@ public static class RoomEndpoints
             };
             await participants.AddAsync(participant, ct);
 
-            var token = liveKit.CreateClientToken(room.RoomName, identity, displayName, isHost: role == ParticipantRole.Host);
-
-            var liveKitCfg = await lkConfig.ResolveAsync(ct);
-
+            // 返回调度服务外部地址 + 房间凭证；客户端凭【用户 JWT + ticket】
+            // 调调度服务 /api/v1/external/rooms/join 换取 LiveKit Url + Token
             return Results.Ok(new JoinRoomResponse(
-                room.Id, conf.Id, room.RoomName, token, liveKitCfg.Url, role == ParticipantRole.Host, userInfo));
+                room.Id,
+                conf.Id,
+                room.RoomName,
+                schedulerOpt.Value.EffectiveExternalBaseUrl,
+                ticket.Ticket,
+                role == ParticipantRole.Host,
+                userInfo));
         }).RequireAuthorization();
 
         // 列出该房间的所有会议场次（历史 + 当前）

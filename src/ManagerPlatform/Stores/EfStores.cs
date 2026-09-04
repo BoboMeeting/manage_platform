@@ -270,45 +270,6 @@ public sealed class EfAiSessionStore(AppDbContext db) : IAiSessionStore
         s.Status, s.CustomPrompt, s.CreatedAt);
 }
 
-/// <summary>LiveKit 配置仓储（EF 实现，单例记录 upsert）。</summary>
-public sealed class EfLiveKitConfigStore(AppDbContext db) : ILiveKitConfigStore
-{
-    private readonly AppDbContext _db = db;
-
-    public Task<LiveKitConfig?> GetAsync(CancellationToken ct = default) =>
-        _db.LiveKitConfigs.FirstOrDefaultAsync(c => c.Id == "default", ct);
-
-    public async Task<LiveKitConfig> SetAsync(LiveKitConfig config, CancellationToken ct = default)
-    {
-        var existing = await _db.LiveKitConfigs
-            .FirstOrDefaultAsync(c => c.Id == "default", ct);
-
-        config.Id = "default";
-
-        if (existing is null)
-        {
-            config.CreatedAt = DateTimeOffset.UtcNow;
-            config.UpdatedAt = config.CreatedAt;
-            _db.LiveKitConfigs.Add(config);
-        }
-        else
-        {
-            existing.Url = config.Url?.Trim() ?? string.Empty;
-            existing.ApiKey = config.ApiKey?.Trim() ?? string.Empty;
-            // 约定：ApiSecret == "__KEEP__" 表示保留原值，不覆盖
-            if (config.ApiSecret != "__KEEP__")
-            {
-                existing.ApiSecret = config.ApiSecret ?? string.Empty;
-            }
-            existing.UpdatedAt = DateTimeOffset.UtcNow;
-            config = existing;
-        }
-
-        await _db.SaveChangesAsync(ct);
-        return config;
-    }
-}
-
 // ==================== 辅助：PostgreSQL 错误识别 ====================
 
 internal static class PgExceptionExtensions

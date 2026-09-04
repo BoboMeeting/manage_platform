@@ -24,15 +24,17 @@ services:
         Include Error Detail=true
 
       # JWT 配置（生产环境必须通过 .env 覆盖 Secret）
+      # 注意：JWT_SECRET 必须与调度服务(meet_schedule_server)的 Auth__JwtSecret 一致
       Jwt__Issuer: ${JWT_ISSUER:-BoboMeet.ManagerPlatform}
       Jwt__Audience: ${JWT_AUDIENCE:-BoboMeet.Client}
-      Jwt__Secret: ${JWT_SECRET:?必须在 .env 中提供 JWT_SECRET，建议 32 字节以上}
+      Jwt__Secret: ${JWT_SECRET:?必须在 .env 中提供 JWT_SECRET，建议 32 字节以上；且须与调度服务 Auth__JwtSecret 相同}
       Jwt__ExpiresSeconds: ${JWT_EXPIRES_SECONDS:-604800}
 
-      # LiveKit（外部服务，需在 .env 中指定真实地址）
-      LiveKit__Url: ${LIVEKIT_URL:?必须在 .env 中提供 LIVEKIT_URL，例如 ws://livekit.example.com:7880}
-      LiveKit__ApiKey: ${LIVEKIT_API_KEY:-devkey}
-      LiveKit__ApiSecret: ${LIVEKIT_API_SECRET:?必须在 .env 中提供 LIVEKIT_API_SECRET}
+      # 调度服务（meet_schedule_server）地址
+      # Internal：服务间调用（容器网络用服务名，如 http://scheduler:5000）
+      # External：返回给 App 客户端的可达地址
+      Scheduler__InternalBaseUrl: ${SCHEDULER_INTERNAL_URL:?必须在 .env 中提供 SCHEDULER_INTERNAL_URL，例如 http://scheduler:5000}
+      Scheduler__ExternalBaseUrl: ${SCHEDULER_EXTERNAL_URL:-http://localhost:5000}
     volumes:
       # DataProtection 密钥持久化（避免重启容器后旧 cookie 失效）
       - dp-keys:/app/.dp-keys

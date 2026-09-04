@@ -11,7 +11,9 @@ namespace ManagerPlatform.Auth;
 
 /// <summary>
 /// 颁发业务系统 JWT（鉴权管理平台 API）。
-/// 与 LiveKit 入会 token（由 LiveKitTokenService 颁发）是两套不同的 token。
+/// 同一 JWT 也被客户端用于调用调度服务外部接口（/api/v1/external/rooms/*）：
+/// 调度服务校验 iss=管理平台、aud=BoboMeet.Client、sub=UserID。
+/// LiveKit 入会 token 由调度服务签发，与本 token 是两套不同的凭证。
 /// </summary>
 public sealed class JwtTokenService
 {

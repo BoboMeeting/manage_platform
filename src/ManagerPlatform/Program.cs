@@ -3,9 +3,9 @@ using ManagerPlatform.Auth;
 using ManagerPlatform.Data;
 
 using ManagerPlatform.Endpoints;
-using ManagerPlatform.LiveKit;
 using ManagerPlatform.Models;
 using ManagerPlatform.Options;
+using ManagerPlatform.Services;
 using ManagerPlatform.Stores;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -18,7 +18,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // ===== 配置绑定 =====
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
-builder.Services.Configure<LiveKitOptions>(builder.Configuration.GetSection(LiveKitOptions.SectionName));
+builder.Services.Configure<SchedulerOptions>(builder.Configuration.GetSection(SchedulerOptions.SectionName));
 
 // ===== 后台服务 =====
 builder.Services.AddHostedService<ManagerPlatform.Services.ConferenceCleanupService>();
@@ -92,10 +92,10 @@ builder.Services.AddScoped<IConferenceStore, EfConferenceStore>();
 builder.Services.AddScoped<IParticipantStore, EfParticipantStore>();
 builder.Services.AddScoped<IAiRoleStore, EfAiRoleStore>();
 builder.Services.AddScoped<IAiSessionStore, EfAiSessionStore>();
-builder.Services.AddScoped<ILiveKitConfigStore, EfLiveKitConfigStore>();
-builder.Services.AddScoped<ILiveKitConfigProvider, LiveKitConfigProvider>();
 builder.Services.AddSingleton<JwtTokenService>();
-builder.Services.AddScoped<ILiveKitTokenService, LiveKitTokenService>();
+
+// 调度服务客户端（服务间调用：创建媒体房间 + 签发房间凭证；LiveKit Token 由调度服务签发）
+builder.Services.AddHttpClient<ISchedulerClient, SchedulerClient>();
 
 // ===== API 文档 =====
 builder.Services.AddEndpointsApiExplorer();

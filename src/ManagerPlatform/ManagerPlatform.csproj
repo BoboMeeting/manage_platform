@@ -11,8 +11,7 @@
     <!-- JWT 认证 -->
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.*" />
     <!-- 密码哈希（PBKDF2）已由内置 API 提供，无需额外包 -->
-    <!-- LiveKit 官方社区 .NET SDK：生成入会 Token / RoomService -->
-    <PackageReference Include="Livekit.Server.Sdk.Dotnet" Version="1.0.*" />
+    <!-- LiveKit Token 由调度服务（meet_schedule_server）签发，管理平台不再依赖 LiveKit SDK -->
     <!-- .NET 10 内置 OpenAPI 文档生成 -->
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.*" />
     <!-- API 文档 UI（Scalar） -->

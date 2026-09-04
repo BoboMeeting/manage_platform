@@ -31,12 +31,17 @@ public sealed record CreateRoomRequest(
 
 public sealed record JoinRoomRequest(string? Nickname = null);
 
+/// <summary>
+/// 入会响应：管理平台不签发 LiveKit Token，而是返回调度服务（外部）地址与房间凭证。
+/// 客户端需再凭【用户登录 JWT + RoomTicket】调用调度服务
+/// POST /api/v1/external/rooms/join 换取 liveKitUrl + liveKitToken。
+/// </summary>
 public sealed record JoinRoomResponse(
     string RoomId,
     string ConferenceId,
     string RoomName,
-    string LiveKitToken,
-    string LiveKitUrl,
+    string SchedulerUrl,
+    string RoomTicket,
     bool IsHost,
     UserInfo? User);
 
@@ -102,28 +107,3 @@ public sealed record AdminCreateUserRequest(
     UserRole Role = UserRole.User);
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
-
-// ==================== LiveKit 配置 ====================
-
-public sealed record LiveKitConfigRequest(
-    string Url,
-    string ApiKey,
-    /// <summary>
-    /// 若为空字符串则表示"不修改现有 Secret"；仅当值非空时更新。
-    /// 新增记录（库中尚无配置）时必填（长度建议 ≥ 32 字节）。
-    /// </summary>
-    string ApiSecret);
-
-/// <summary>
-/// 管理端响应：SuperAdmin 查看/编辑 LiveKit 配置。
-/// ApiSecret 返回时脱敏（仅前后各 2 字符可见），前端提交空串表示"保持不变"。
-/// </summary>
-public sealed record LiveKitConfigResponse(
-    string Url,
-    string ApiKey,
-    string ApiSecretMasked,
-    DateTimeOffset UpdatedAt,
-    bool FromDatabase);
-
-/// <summary>公共响应：仅返回客户端入会需要的 LiveKit URL（不含任何密钥）。</summary>
-public sealed record LiveKitPublicConfig(string Url);
