@@ -90,7 +90,7 @@ public static class RoomEndpoints
             IUserStore users,
             ILiveKitTokenService liveKit,
             IAiSessionStore aiSessions,
-            IOptions<LiveKitOptions> lkOpt,
+            ILiveKitConfigProvider lkConfig,
             CancellationToken ct) =>
         {
             var room = await rooms.GetByIdAsync(roomId, ct);
@@ -232,8 +232,10 @@ public static class RoomEndpoints
 
             var token = liveKit.CreateClientToken(room.RoomName, identity, displayName, isHost: role == ParticipantRole.Host);
 
+            var liveKitCfg = await lkConfig.ResolveAsync(ct);
+
             return Results.Ok(new JoinRoomResponse(
-                room.Id, conf.Id, room.RoomName, token, lkOpt.Value.Url, role == ParticipantRole.Host, userInfo));
+                room.Id, conf.Id, room.RoomName, token, liveKitCfg.Url, role == ParticipantRole.Host, userInfo));
         }).RequireAuthorization();
 
         // 列出该房间的所有会议场次（历史 + 当前）

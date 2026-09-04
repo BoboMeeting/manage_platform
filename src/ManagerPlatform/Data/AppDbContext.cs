@@ -20,6 +20,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<Participant> Participants => Set<Participant>();
     public DbSet<AIRole> AiRoles => Set<AIRole>();
     public DbSet<AiSession> AiSessions => Set<AiSession>();
+    public DbSet<LiveKitConfig> LiveKitConfigs => Set<LiveKitConfig>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -127,6 +128,17 @@ public sealed class AppDbContext : DbContext
             e.HasIndex(s => s.ConferenceId);
             e.HasIndex(s => s.AiRoleId);
             e.HasIndex(s => s.Status);
+        });
+
+        // ===== LiveKitConfig =====
+        b.Entity<LiveKitConfig>(e =>
+        {
+            e.ToTable("live_kit_configs");
+            e.HasKey(c => c.Id);
+            e.Property(c => c.Id).HasMaxLength(32);
+            e.Property(c => c.Url).HasMaxLength(512).IsRequired();
+            e.Property(c => c.ApiKey).HasMaxLength(128).IsRequired();
+            e.Property(c => c.ApiSecret).HasMaxLength(256).IsRequired();
         });
     }
 }

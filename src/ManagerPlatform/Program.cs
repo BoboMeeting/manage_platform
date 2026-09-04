@@ -92,8 +92,10 @@ builder.Services.AddScoped<IConferenceStore, EfConferenceStore>();
 builder.Services.AddScoped<IParticipantStore, EfParticipantStore>();
 builder.Services.AddScoped<IAiRoleStore, EfAiRoleStore>();
 builder.Services.AddScoped<IAiSessionStore, EfAiSessionStore>();
+builder.Services.AddScoped<ILiveKitConfigStore, EfLiveKitConfigStore>();
+builder.Services.AddScoped<ILiveKitConfigProvider, LiveKitConfigProvider>();
 builder.Services.AddSingleton<JwtTokenService>();
-builder.Services.AddSingleton<ILiveKitTokenService, LiveKitTokenService>();
+builder.Services.AddScoped<ILiveKitTokenService, LiveKitTokenService>();
 
 // ===== API 文档 =====
 builder.Services.AddEndpointsApiExplorer();

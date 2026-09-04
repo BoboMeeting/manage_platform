@@ -101,3 +101,28 @@ public sealed record AdminCreateUserRequest(
     UserRole Role = UserRole.User);
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
+
+// ==================== LiveKit 配置 ====================
+
+public sealed record LiveKitConfigRequest(
+    string Url,
+    string ApiKey,
+    /// <summary>
+    /// 若为空字符串则表示"不修改现有 Secret"；仅当值非空时更新。
+    /// 新增记录（库中尚无配置）时必填（长度建议 ≥ 32 字节）。
+    /// </summary>
+    string ApiSecret);
+
+/// <summary>
+/// 管理端响应：SuperAdmin 查看/编辑 LiveKit 配置。
+/// ApiSecret 返回时脱敏（仅前后各 2 字符可见），前端提交空串表示"保持不变"。
+/// </summary>
+public sealed record LiveKitConfigResponse(
+    string Url,
+    string ApiKey,
+    string ApiSecretMasked,
+    DateTimeOffset UpdatedAt,
+    bool FromDatabase);
+
+/// <summary>公共响应：仅返回客户端入会需要的 LiveKit URL（不含任何密钥）。</summary>
+public sealed record LiveKitPublicConfig(string Url);
