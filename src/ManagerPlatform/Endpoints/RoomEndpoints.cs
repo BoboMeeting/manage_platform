@@ -42,7 +42,7 @@ public static class RoomEndpoints
                 Title = req.Title.Trim(),
                 HostUserId = user.Id,
                 HostNickname = user.Nickname,
-                RoomName = Guid.NewGuid().ToString("N"), // LiveKit 房间名
+                RoomName = Random.Shared.Next(100000000, 1000000000).ToString(), // 9 位随机会议号（参考腾讯会议号）
                 StartTime = start,
                 DurationSeconds = duration,
                 MaxParticipants = max,
