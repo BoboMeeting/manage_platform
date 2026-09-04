@@ -17,6 +17,12 @@ RUN dotnet publish src/ManagerPlatform/ManagerPlatform.csproj \
     -o /app/publish \
     /p:UseAppHost=false
 
+# 发布健康检查小工具（运行时镜像无 curl，健康检查改用 dotnet 运行时探测 /healthz）
+RUN dotnet publish src/HealthCheck/HealthCheck.csproj \
+    -c Release \
+    -o /app/healthcheck \
+    /p:UseAppHost=false
+
 # ============================================================================
 # 阶段 2：运行时镜像（仅包含发布产物）
 # ============================================================================
@@ -33,6 +39,7 @@ RUN mkdir -p /app/.dp-keys && chown -R app:app /app
 USER app
 
 COPY --from=build --chown=app:app /app/publish ./
+COPY --from=build --chown=app:app /app/healthcheck ./healthcheck
 
 EXPOSE 5080
 

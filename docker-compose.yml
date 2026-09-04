@@ -31,10 +31,18 @@ services:
       Jwt__ExpiresSeconds: ${JWT_EXPIRES_SECONDS:-604800}
 
       # 调度服务（meet_schedule_server）地址
-      # Internal：服务间调用（容器网络用服务名，如 http://scheduler:5000）
-      # External：返回给 App 客户端的可达地址
-      Scheduler__InternalBaseUrl: ${SCHEDULER_INTERNAL_URL:?必须在 .env 中提供 SCHEDULER_INTERNAL_URL，例如 http://scheduler:5000}
-      Scheduler__ExternalBaseUrl: ${SCHEDULER_EXTERNAL_URL:-http://localhost:5000}
+      # Internal：backend 容器 → 调度服务的服务间调用（/api/v1/internal/*）
+      #   调度服务跑在【宿主机】时默认 http://host.docker.internal:5000
+      #   （容器内 localhost 指向容器自身、不是宿主机）；
+      #   若调度服务也容器化且在同一网络，可在 .env 改为服务名 http://scheduler:5000
+      # External：返回给 App 客户端的可达地址（App 在宿主机/用户机器上运行，
+      #   localhost 即宿主机；生产环境请在 .env 改为服务器 IP/域名）
+      Scheduler__InternalBaseUrl: ${SCHEDULER_INTERNAL_URL:-http://host.docker.internal:5000}
+      Scheduler__ExternalBaseUrl: ${SCHEDULER_EXTERNAL_URL:-http://host.docker.internal:5000}
+    extra_hosts:
+      # 允许容器通过 host.docker.internal 访问宿主机（调度服务在宿主机上运行时必需）
+      # Docker Desktop for Windows/Mac 原生支持；Linux 上由 host-gateway 显式映射
+      - "host.docker.internal:host-gateway"
     volumes:
       # DataProtection 密钥持久化（避免重启容器后旧 cookie 失效）
       - dp-keys:/app/.dp-keys
@@ -44,7 +52,8 @@ services:
     networks:
       - bobomeet
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5080/healthz || exit 1"]
+      # 镜像内无 curl，使用随镜像发布的 HealthCheck 小工具（dotnet 运行时）探测 /healthz
+      test: ["CMD", "dotnet", "/app/healthcheck/HealthCheck.dll", "http://127.0.0.1:5080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
