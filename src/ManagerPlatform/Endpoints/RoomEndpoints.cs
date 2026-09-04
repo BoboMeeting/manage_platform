@@ -57,24 +57,35 @@ public static class RoomEndpoints
         }).RequireAuthorization();
 
         // 列出我的房间
-        group.MapGet("/", async (HttpContext ctx, IRoomStore rooms, CancellationToken ct) =>
+        group.MapGet("/", async (HttpContext ctx, IRoomStore rooms, IConferenceStore conferences, CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
             var list = await rooms.FindAsync(cu.UserId, status: null, ct);
-            return Results.Ok(list.Select(ToSummary).ToArray());
+            var now = DateTimeOffset.UtcNow;
+            var summaries = new List<RoomSummary>(list.Count);
+            foreach (var room in list)
+            {
+                var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+                summaries.Add(ToSummary(room, now, conf));
+            }
+            return Results.Ok(summaries);
         }).RequireAuthorization();
 
-        group.MapGet("/{id}", async (string id, IRoomStore rooms, CancellationToken ct) =>
+        group.MapGet("/{id}", async (string id, IRoomStore rooms, IConferenceStore conferences, CancellationToken ct) =>
         {
             var room = await rooms.GetByIdAsync(id, ct);
-            return room is null ? Results.NotFound(new { error = "room not found" }) : Results.Ok(ToSummary(room));
+            if (room is null) return Results.NotFound(new { error = "room not found" });
+            var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+            return Results.Ok(ToSummary(room, DateTimeOffset.UtcNow, conf));
         }).RequireAuthorization();
 
         // 通过邀请码查询
-        group.MapGet("/invite/{code}", async (string code, IRoomStore rooms, CancellationToken ct) =>
+        group.MapGet("/invite/{code}", async (string code, IRoomStore rooms, IConferenceStore conferences, CancellationToken ct) =>
         {
             var room = await rooms.GetByInviteCodeAsync(code, ct);
-            return room is null ? Results.NotFound(new { error = "invite code invalid" }) : Results.Ok(ToSummary(room));
+            if (room is null) return Results.NotFound(new { error = "invite code invalid" });
+            var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+            return Results.Ok(ToSummary(room, DateTimeOffset.UtcNow, conf));
         });
 
         // 获取入会 token（核心接口：客户端入会）
@@ -393,6 +404,7 @@ public static class RoomEndpoints
             string roomId,
             HttpContext ctx,
             IRoomStore rooms,
+            IConferenceStore conferences,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
@@ -403,13 +415,15 @@ public static class RoomEndpoints
             room.Locked = true;
             room.UpdatedAt = DateTimeOffset.UtcNow;
             await rooms.UpdateAsync(room, ct);
-            return Results.Ok(ToSummary(room));
+            var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+            return Results.Ok(ToSummary(room, DateTimeOffset.UtcNow, conf));
         }).RequireAuthorization();
 
         group.MapPost("/{roomId}/unlock", async (
             string roomId,
             HttpContext ctx,
             IRoomStore rooms,
+            IConferenceStore conferences,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
@@ -420,25 +434,27 @@ public static class RoomEndpoints
             room.Locked = false;
             room.UpdatedAt = DateTimeOffset.UtcNow;
             await rooms.UpdateAsync(room, ct);
-            return Results.Ok(ToSummary(room));
+            var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+            return Results.Ok(ToSummary(room, DateTimeOffset.UtcNow, conf));
         }).RequireAuthorization();
 
         return app;
     }
 
-    private static RoomSummary ToSummary(MeetingRoom r) => ToSummary(r, DateTimeOffset.UtcNow);
+    private static RoomSummary ToSummary(MeetingRoom r) => ToSummary(r, DateTimeOffset.UtcNow, null);
 
-    private static RoomSummary ToSummary(MeetingRoom r, DateTimeOffset now)
+    private static RoomSummary ToSummary(MeetingRoom r, DateTimeOffset now, Conference? activeConf)
     {
         var status = ComputeEffectiveStatus(r, now);
+        var statusStr = ComputeStatusStr(status, activeConf);
         return new RoomSummary(
             r.Id, r.Title, r.RoomName, r.HostUserId, r.HostNickname,
-            r.StartTime, r.EndTime, r.MaxParticipants, status, r.Locked, r.InviteCode, r.CreatedAt);
+            r.StartTime, r.EndTime, r.MaxParticipants, status, statusStr, r.Locked, r.InviteCode, r.CreatedAt);
     }
 
     /// <summary>
     /// 根据当前时间虚算会议状态：Cancelled 为终态不变；超过 EndTime → Closed；
-    /// 已到 StartTime 但仍未被 join（仍为 Scheduled）→ Open。不落库，仅影响显示。
+    /// 已到 StartTime 但仍未被join（仍为 Scheduled）→ Open。不落库，仅影响显示。
     /// </summary>
     private static MeetingRoomStatus ComputeEffectiveStatus(MeetingRoom r, DateTimeOffset now)
     {
@@ -447,6 +463,23 @@ public static class RoomEndpoints
         if (r.Status == MeetingRoomStatus.Scheduled && now >= r.StartTime)
             return MeetingRoomStatus.Open;
         return r.Status;
+    }
+
+    /// <summary>
+    /// 计算 StatusStr 显示文案：
+    /// Scheduled=已预约 / Closed=会议已结束 / Cancelled=会议已取消；
+    /// Open 时根据是否存在进行中的 Conference 区分 待开始 / 进行中。
+    /// </summary>
+    private static string ComputeStatusStr(MeetingRoomStatus status, Conference? activeConf)
+    {
+        return status switch
+        {
+            MeetingRoomStatus.Scheduled => "已预约",
+            MeetingRoomStatus.Closed => "会议已结束",
+            MeetingRoomStatus.Cancelled => "会议已取消",
+            MeetingRoomStatus.Open => activeConf is { Status: ConferenceStatus.InProgress } ? "进行中" : "待开始",
+            _ => string.Empty,
+        };
     }
 
     private static ConferenceSummary ToConfSummary(Conference c, int activeCount) => new(
