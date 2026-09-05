@@ -19,6 +19,7 @@ public static class RoomEndpoints
             HttpContext ctx,
             IUserStore users,
             IRoomStore rooms,
+            ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu)
@@ -53,6 +54,8 @@ public static class RoomEndpoints
             };
             await rooms.AddAsync(room, ct);
 
+            logger.LogInformation("创建房间成功：房间={RoomId}，会议号={RoomName}，标题={Title}，主持人={HostUserId}，开始时间={StartTime}",
+                room.Id, room.RoomName, room.Title, room.HostUserId, room.StartTime);
             return Results.Created($"/api/rooms/{room.Id}", ToSummary(room));
         }).RequireAuthorization();
 
@@ -104,13 +107,29 @@ public static class RoomEndpoints
             IAiSessionStore aiSessions,
             ISchedulerClient scheduler,
             IOptions<SchedulerOptions> schedulerOpt,
+            ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
+            // 纯读取，便于在鉴权前的失败分支中也能记录发起人；不影响后续授权逻辑
+            var userId = ctx.User.ToCurrentUser()?.UserId ?? "-";
+
             var room = await rooms.GetByIdAsync(roomId, ct);
-            if (room is null) return Results.NotFound(new { error = "room not found" });
+            if (room is null)
+            {
+                logger.LogWarning("入会失败：房间不存在，房间={RoomId}，用户={UserId}", roomId, userId);
+                return Results.NotFound(new { error = "room not found" });
+            }
             if (room.Status == MeetingRoomStatus.Cancelled || room.Status == MeetingRoomStatus.Closed)
+            {
+                logger.LogWarning("入会失败：会议已结束或取消，房间={RoomId}，状态={Status}，用户={UserId}",
+                    roomId, room.Status, userId);
                 return Results.Conflict(new { error = "会议已结束或取消" });
-            if (room.Locked) return Results.Conflict(new { error = "房间已锁定" });
+            }
+            if (room.Locked)
+            {
+                logger.LogWarning("入会失败：房间已锁定，房间={RoomId}，用户={UserId}", roomId, userId);
+                return Results.Conflict(new { error = "房间已锁定" });
+            }
 
             // 入会必须登录系统；匿名访客不再允许加入会议
             if (ctx.User.ToCurrentUser() is not { } cu)
@@ -119,7 +138,11 @@ public static class RoomEndpoints
             var now = DateTimeOffset.UtcNow;
             // 时间窗口校验：提前 5 分钟可进入（用于主持人准备）
             if (now < room.StartTime.AddMinutes(-5) && room.Status == MeetingRoomStatus.Scheduled)
+            {
+                logger.LogWarning("入会失败：未到开放时间，房间={RoomId}，开始时间={StartTime}，用户={UserId}",
+                    roomId, room.StartTime, cu.UserId);
                 return Results.Conflict(new { error = "会议尚未到开放时间" });
+            }
             // 预约时间窗口已结束 → 懒关闭房间并拒绝入会
             if (now > room.EndTime)
             {
@@ -128,13 +151,24 @@ public static class RoomEndpoints
                     room.Status = MeetingRoomStatus.Closed;
                     room.UpdatedAt = now;
                     await rooms.UpdateAsync(room, ct);
+                    logger.LogInformation("房间超过预约窗口被懒关闭：房间={RoomId}，会议号={RoomName}，结束时间={EndTime}",
+                        room.Id, room.RoomName, room.EndTime);
                 }
+                logger.LogWarning("入会失败：预约时间已结束，房间={RoomId}，用户={UserId}", roomId, cu.UserId);
                 return Results.Conflict(new { error = "预约时间已结束" });
             }
 
             var user = await users.GetByIdAsync(cu.UserId, ct);
-            if (user is null) return Results.NotFound(new { error = "user not found" });
-            if (user.Status == UserStatus.Disabled) return Results.Forbid();
+            if (user is null)
+            {
+                logger.LogWarning("入会失败：用户不存在，用户={UserId}", cu.UserId);
+                return Results.NotFound(new { error = "user not found" });
+            }
+            if (user.Status == UserStatus.Disabled)
+            {
+                logger.LogWarning("入会失败：账号已禁用，用户={UserId}，房间={RoomId}", cu.UserId, roomId);
+                return Results.Forbid();
+            }
 
             string identity = user.Id;
             string displayName = string.IsNullOrWhiteSpace(nickname) ? user.Nickname : nickname;
@@ -160,6 +194,7 @@ public static class RoomEndpoints
                     && conf.WaitingExpiresAt.HasValue
                     && now > conf.WaitingExpiresAt.Value)
                 {
+                    logger.LogDebug("场次 Waiting 超时，懒终态化后重开：场次={ConfId}，房间={RoomId}", conf.Id, room.Id);
                     conf.Status = ConferenceStatus.Ended;
                     conf.EndedAt = now;
                     await conferences.UpdateAsync(conf, ct);
@@ -169,6 +204,7 @@ public static class RoomEndpoints
                          && conf.PendingCloseExpiresAt.HasValue
                          && now > conf.PendingCloseExpiresAt.Value)
                 {
+                    logger.LogDebug("场次 PendingClose 宽限期超时，懒终态化后重开：场次={ConfId}，房间={RoomId}", conf.Id, room.Id);
                     conf.Status = ConferenceStatus.Ended;
                     conf.EndedAt = now;
                     // 清理挂起 AI 会话
@@ -215,7 +251,11 @@ public static class RoomEndpoints
             // 容量校验（仅统计人类在线参会者，按场次）
             var activeCount = await participants.CountActiveInConferenceAsync(conf.Id, ct);
             if (activeCount >= room.MaxParticipants)
+            {
+                logger.LogWarning("入会失败：房间人数已满，房间={RoomId}，场次={ConfId}，在会人数={ActiveCount}，上限={Max}，用户={UserId}",
+                    room.Id, conf.Id, activeCount, room.MaxParticipants, cu.UserId);
                 return Results.Conflict(new { error = "房间人数已满" });
+            }
 
             // 第一个入会者自动成为主持人（若与预约主持人不同，则以预约为准）
             var role = (isHost || activeCount == 0) ? ParticipantRole.Host : ParticipantRole.Member;
@@ -232,6 +272,10 @@ public static class RoomEndpoints
             }
             catch (SchedulerException ex)
             {
+                // 调度服务是入会链路的外部依赖，失败需带完整上下文告警，便于联动排查
+                logger.LogError(ex,
+                    "入会失败：调度服务异常，房间={RoomId}，会议号={RoomName}，场次={ConfId}，用户={UserId}，角色={Role}",
+                    room.Id, room.RoomName, conf.Id, cu.UserId, role);
                 return Results.Json(
                     new { error = $"调度服务暂不可用，请稍后重试（{ex.Message}）" },
                     statusCode: StatusCodes.Status502BadGateway);
@@ -261,6 +305,10 @@ public static class RoomEndpoints
                 Role = role,
             };
             await participants.AddAsync(participant, ct);
+
+            logger.LogInformation(
+                "入会成功：用户={UserId}（{Nickname}，角色={Role}）进入房间={RoomId}，会议号={RoomName}，场次={ConfId}，场次状态={ConfStatus}，在会人数={ActiveCount}",
+                cu.UserId, displayName, role, room.Id, room.RoomName, conf.Id, conf.Status, activeCount + 1);
 
             // 返回调度服务外部地址 + 房间凭证；客户端凭【用户 JWT + ticket】
             // 调调度服务 /api/v1/external/rooms/join 换取 LiveKit Url + Token
@@ -324,6 +372,7 @@ public static class RoomEndpoints
             IAiRoleStore aiRoles,
             IAiSessionStore aiSessions,
             IParticipantStore participants,
+            ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
@@ -332,14 +381,25 @@ public static class RoomEndpoints
 
             // 校验权限：必须是会议主持人或管理员
             if (cu.UserId != room.HostUserId && !cu.IsAtLeast(UserRole.Operator))
+            {
+                logger.LogWarning("添加 AI 被拒：非主持人/管理员，房间={RoomId}，用户={UserId}", roomId, cu.UserId);
                 return Results.Forbid();
+            }
 
             // AI 归属当前进行中的会议场次；会议未开始则拒绝
             var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
-            if (conf is null) return Results.Conflict(new { error = "会议尚未开始，请先入会开启会议" });
+            if (conf is null)
+            {
+                logger.LogWarning("添加 AI 失败：会议尚未开始，房间={RoomId}，用户={UserId}", roomId, cu.UserId);
+                return Results.Conflict(new { error = "会议尚未开始，请先入会开启会议" });
+            }
 
             var role = await aiRoles.GetByIdAsync(req.RoleId, ct);
-            if (role is null) return Results.BadRequest(new { error = "AI 角色不存在" });
+            if (role is null)
+            {
+                logger.LogWarning("添加 AI 失败：AI 角色不存在，角色={RoleId}，房间={RoomId}，用户={UserId}", req.RoleId, roomId, cu.UserId);
+                return Results.BadRequest(new { error = "AI 角色不存在" });
+            }
 
             var now = DateTimeOffset.UtcNow;
             var session = new AiSession
@@ -364,6 +424,9 @@ public static class RoomEndpoints
             };
             await participants.AddAsync(aiParticipant, ct);
 
+            logger.LogInformation("添加 AI 成功：房间={RoomId}，场次={ConfId}，AI 角色={RoleName}（{RoleId}），会话={SessionId}，操作人={UserId}",
+                roomId, conf.Id, role.Name, role.Id, session.Id, cu.UserId);
+
             // 真正的 Agent 入会由 Agent Service 异步处理；此处仅返回调度结果
             return Results.Created($"/api/rooms/{roomId}/ai/{session.Id}",
                 new AiSessionInfo(session.Id, session.ConferenceId, session.AiRoleId, role.Name,
@@ -379,13 +442,17 @@ public static class RoomEndpoints
             IConferenceStore conferences,
             IAiSessionStore aiSessions,
             IParticipantStore participants,
+            ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
             var room = await rooms.GetByIdAsync(roomId, ct);
             if (room is null) return Results.NotFound(new { error = "room not found" });
             if (cu.UserId != room.HostUserId && !cu.IsAtLeast(UserRole.Operator))
+            {
+                logger.LogWarning("移除 AI 被拒：非主持人/管理员，房间={RoomId}，用户={UserId}", roomId, cu.UserId);
                 return Results.Forbid();
+            }
 
             var session = await aiSessions.GetAsync(aiSessionId, ct);
             if (session is null) return Results.NotFound(new { error = "ai session not found" });
@@ -408,6 +475,8 @@ public static class RoomEndpoints
                 await participants.UpdateAsync(aiP, ct);
             }
 
+            logger.LogInformation("移除 AI 成功：房间={RoomId}，场次={ConfId}，AI 会话={SessionId}，操作人={UserId}",
+                roomId, conf.Id, aiSessionId, cu.UserId);
             return Results.Ok(new { ok = true });
         }).RequireAuthorization();
 
@@ -430,16 +499,21 @@ public static class RoomEndpoints
             HttpContext ctx,
             IRoomStore rooms,
             IConferenceStore conferences,
+            ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
             var room = await rooms.GetByIdAsync(roomId, ct);
             if (room is null) return Results.NotFound(new { error = "room not found" });
             if (cu.UserId != room.HostUserId && !cu.IsAtLeast(UserRole.Operator))
+            {
+                logger.LogWarning("锁定房间被拒：非主持人/管理员，房间={RoomId}，用户={UserId}", roomId, cu.UserId);
                 return Results.Forbid();
+            }
             room.Locked = true;
             room.UpdatedAt = DateTimeOffset.UtcNow;
             await rooms.UpdateAsync(room, ct);
+            logger.LogInformation("房间已锁定：房间={RoomId}，会议号={RoomName}，操作人={UserId}", room.Id, room.RoomName, cu.UserId);
             var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
             return Results.Ok(ToSummary(room, DateTimeOffset.UtcNow, conf));
         }).RequireAuthorization();
@@ -449,18 +523,64 @@ public static class RoomEndpoints
             HttpContext ctx,
             IRoomStore rooms,
             IConferenceStore conferences,
+            ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
             var room = await rooms.GetByIdAsync(roomId, ct);
             if (room is null) return Results.NotFound(new { error = "room not found" });
             if (cu.UserId != room.HostUserId && !cu.IsAtLeast(UserRole.Operator))
+            {
+                logger.LogWarning("解锁房间被拒：非主持人/管理员，房间={RoomId}，用户={UserId}", roomId, cu.UserId);
                 return Results.Forbid();
+            }
             room.Locked = false;
             room.UpdatedAt = DateTimeOffset.UtcNow;
             await rooms.UpdateAsync(room, ct);
+            logger.LogInformation("房间已解锁：房间={RoomId}，会议号={RoomName}，操作人={UserId}", room.Id, room.RoomName, cu.UserId);
             var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
             return Results.Ok(ToSummary(room, DateTimeOffset.UtcNow, conf));
+        }).RequireAuthorization();
+
+        // 主持人取消会议（仅主持人/管理员）：房间置为 Cancelled 终态，并结束进行中的场次
+        group.MapPost("/{roomId}/cancel", async (
+            string roomId,
+            HttpContext ctx,
+            IRoomStore rooms,
+            IConferenceStore conferences,
+            ILogger<ApiLog> logger,
+            CancellationToken ct) =>
+        {
+            if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
+            var room = await rooms.GetByIdAsync(roomId, ct);
+            if (room is null) return Results.NotFound(new { error = "room not found" });
+            if (cu.UserId != room.HostUserId && !cu.IsAtLeast(UserRole.Operator))
+            {
+                logger.LogWarning("取消会议被拒：非主持人/管理员，房间={RoomId}，用户={UserId}", roomId, cu.UserId);
+                return Results.Forbid();
+            }
+            if (room.Status == MeetingRoomStatus.Cancelled)
+                return Results.Conflict(new { error = "会议已取消" });
+            if (room.Status == MeetingRoomStatus.Closed)
+                return Results.Conflict(new { error = "会议已结束" });
+
+            var now = DateTimeOffset.UtcNow;
+            room.Status = MeetingRoomStatus.Cancelled;
+            room.UpdatedAt = now;
+            await rooms.UpdateAsync(room, ct);
+
+            // 同步结束进行中的场次（GetActiveByRoomAsync 只返回 Waiting/InProgress/PendingClose）
+            var conf = await conferences.GetActiveByRoomAsync(room.Id, ct);
+            if (conf is not null)
+            {
+                conf.Status = ConferenceStatus.Ended;
+                conf.EndedAt = now;
+                await conferences.UpdateAsync(conf, ct);
+            }
+
+            logger.LogInformation("会议已取消：房间={RoomId}，会议号={RoomName}，操作人={UserId}，联动结束场次={ConfId}",
+                room.Id, room.RoomName, cu.UserId, conf?.Id ?? "无");
+            return Results.Ok(ToSummary(room, now, null));
         }).RequireAuthorization();
 
         return app;

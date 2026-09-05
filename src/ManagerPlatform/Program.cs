@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Text;
 using ManagerPlatform.Auth;
 using ManagerPlatform.Data;
@@ -123,6 +126,44 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 
+// ===== HTTP 访问日志：统一记录 方法/路径/查询串/状态码/耗时/登录用户 =====
+// 刻意不记录请求体与响应体：登录、改密接口含密码，入会接口含房间凭证(ticket)，落日志有泄密风险；
+// 业务上下文（谁、对哪个房间/场次做了什么、失败原因）由各端点内的业务日志补充。
+app.Use(async (context, next) =>
+{
+    var logger = context.RequestServices.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("ManagerPlatform.Http");
+    var sw = Stopwatch.StartNew();
+    try
+    {
+        await next();
+    }
+    catch (Exception ex)
+    {
+        sw.Stop();
+        logger.LogError(ex,
+            "HTTP {Method} {Path}{Query} 未处理异常，耗时 {Elapsed}ms，用户={UserId}",
+            context.Request.Method, context.Request.Path, context.Request.QueryString,
+            sw.ElapsedMilliseconds, GetUserId(context));
+        throw;
+    }
+
+    sw.Stop();
+    var status = context.Response.StatusCode;
+    // 2xx/3xx→Information；4xx→Warning（客户端错误，排查高频）；5xx→Error；健康检查降为 Debug 降噪
+    var level = status >= 500
+        ? LogLevel.Error
+        : status >= 400
+            ? LogLevel.Warning
+            : context.Request.Path.StartsWithSegments("/healthz")
+                ? LogLevel.Debug
+                : LogLevel.Information;
+    logger.Log(level,
+        "HTTP {Method} {Path}{Query} → {Status}，耗时 {Elapsed}ms，用户={UserId}",
+        context.Request.Method, context.Request.Path, context.Request.QueryString,
+        status, sw.ElapsedMilliseconds, GetUserId(context));
+});
+
 app.MapGet("/healthz", () => Results.Ok(new { ok = true, ts = DateTimeOffset.UtcNow }))
    .WithTags("System");
 
@@ -168,6 +209,14 @@ static void EnsureAdminEndpointsAreIsolated(IServiceProvider services)
             "管理端专用端点必须位于 /api/admin 前缀下，否则 Nginx 无法按前缀对外隔离。违规端点：\n"
             + string.Join("\n", offenders));
 }
+
+// 从已认证请求提取用户 ID（与 CurrentUserExtensions.ToCurrentUser 的回退顺序一致）；未登录返回 "-"
+static string GetUserId(HttpContext context) =>
+    context.User.Identity?.IsAuthenticated == true
+        ? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+          ?? context.User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value
+          ?? "-"
+        : "-";
 
 // ===== 种子数据（local function，须位于类型声明之前）=====
 static async Task SeedAsync(IServiceProvider services)

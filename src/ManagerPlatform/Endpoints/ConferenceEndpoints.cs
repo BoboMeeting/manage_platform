@@ -61,6 +61,7 @@ public static class ConferenceEndpoints
             IConferenceStore conferences,
             IParticipantStore participants,
             IAiSessionStore aiSessions,
+            ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu)
@@ -73,7 +74,11 @@ public static class ConferenceEndpoints
 
             var ps = await participants.GetByConferenceAsync(conf.Id, ct);
             var me = ps.FirstOrDefault(p => p.UserId == cu.UserId && p.LeaveTime is null && !p.IsAi);
-            if (me is null) return Results.NotFound(new { error = "您未在此会议中" });
+            if (me is null)
+            {
+                logger.LogWarning("离会失败：用户不在会议中，场次={ConfId}，用户={UserId}", id, cu.UserId);
+                return Results.NotFound(new { error = "您未在此会议中" });
+            }
 
             me.LeaveTime = DateTimeOffset.UtcNow;
             await participants.UpdateAsync(me, ct);
@@ -89,6 +94,9 @@ public static class ConferenceEndpoints
                 enteredPendingClose = true;
             }
 
+            logger.LogInformation(
+                "用户离会：场次={ConfId}，房间={RoomId}，用户={UserId}，剩余在会={Remaining}，进入宽限期={PendingClose}",
+                conf.Id, conf.RoomId, cu.UserId, remaining, enteredPendingClose);
             return Results.Ok(new { ok = true, enteredPendingClose });
         }).RequireAuthorization();
 
@@ -99,6 +107,7 @@ public static class ConferenceEndpoints
             IConferenceStore conferences,
             IParticipantStore participants,
             IAiSessionStore aiSessions,
+            ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu)
@@ -113,7 +122,11 @@ public static class ConferenceEndpoints
             bool isHost = cu.UserId == conf.StartedByUserId;
             bool isAdmin = cu.IsAtLeast(UserRole.Operator);
             if (!isHost && !isAdmin)
+            {
+                logger.LogWarning("结束会议被拒：非发起人/管理员，场次={ConfId}，用户={UserId}，发起人={StartedBy}",
+                    conf.Id, cu.UserId, conf.StartedByUserId);
                 return Results.Forbid();
+            }
 
             // 强制终态：Completed（主持人主动结束）
             var now = DateTimeOffset.UtcNow;
@@ -145,6 +158,8 @@ public static class ConferenceEndpoints
 
             await conferences.UpdateAsync(conf, ct);
 
+            logger.LogInformation("会议被主动结束：场次={ConfId}，房间={RoomId}，操作人={UserId}（{Role}）",
+                conf.Id, conf.RoomId, cu.UserId, isHost ? "发起人" : "管理员");
             return Results.Ok(new { ok = true, endedReason = "completed" });
         }).RequireAuthorization();
 
