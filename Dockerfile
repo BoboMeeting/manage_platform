@@ -32,8 +32,14 @@ WORKDIR /app
 ENV ASPNETCORE_ENVIRONMENT=Production
 ENV ASPNETCORE_URLS=http://+:5080
 
-# DataProtection 密钥持久化目录（无状态 JWT 不强依赖，但持久化可避免重启后旧 cookie 失效）
-RUN mkdir -p /app/.dp-keys && chown -R app:app /app
+# 视频处理依赖：ffprobe（探测视频时长/分辨率，对应配置 Media:FFprobePath）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# DataProtection 密钥与媒体存储目录（/app/storage 为视频/HLS/字幕默认存储根，
+# 对应配置 Media:StorageRoot；named volume 首挂时继承此目录属主，保证 app 用户可写）
+RUN mkdir -p /app/.dp-keys /app/storage && chown -R app:app /app
 
 # .NET 10 官方镜像内置非 root 用户 app（uid 1001）
 USER app
