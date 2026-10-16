@@ -63,7 +63,7 @@ public static class RoomEndpoints
         group.MapGet("/", async (HttpContext ctx, IRoomStore rooms, IConferenceStore conferences, CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
-            var list = await rooms.FindAsync(cu.UserId, status: null, ct);
+            var list = await rooms.GetAllAsync(ct);
             var now = DateTimeOffset.UtcNow;
             var summaries = new List<RoomSummary>(list.Count);
             foreach (var room in list)
