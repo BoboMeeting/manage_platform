@@ -20,6 +20,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<Participant> Participants => Set<Participant>();
     public DbSet<AIRole> AiRoles => Set<AIRole>();
     public DbSet<AiSession> AiSessions => Set<AiSession>();
+    public DbSet<VideoResource> VideoResources => Set<VideoResource>();
+    public DbSet<SubtitleTrack> SubtitleTracks => Set<SubtitleTrack>();
+    public DbSet<VideoStatusEvent> VideoStatusEvents => Set<VideoStatusEvent>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -127,6 +130,56 @@ public sealed class AppDbContext : DbContext
             e.HasIndex(s => s.ConferenceId);
             e.HasIndex(s => s.AiRoleId);
             e.HasIndex(s => s.Status);
+        });
+
+        // ===== VideoResource =====
+        b.Entity<VideoResource>(e =>
+        {
+            e.ToTable("video_resources");
+            e.HasKey(v => v.Id);
+            e.Property(v => v.Id).HasMaxLength(32);
+            e.Property(v => v.Title).HasMaxLength(256).IsRequired();
+            e.Property(v => v.Description).HasMaxLength(2000);
+            e.Property(v => v.OriginalFileName).HasMaxLength(256).IsRequired();
+            e.Property(v => v.StorageKey).HasMaxLength(512).IsRequired();
+            e.Property(v => v.HlsMasterKey).HasMaxLength(512);
+            e.Property(v => v.DeepMeaningKey).HasMaxLength(512);
+            e.Property(v => v.FailReason).HasMaxLength(2000);
+            e.Property(v => v.CreatedBy).HasMaxLength(32).IsRequired();
+            e.HasIndex(v => v.ProcessStatus);
+            e.HasIndex(v => v.ShelfStatus);
+            e.HasIndex(v => v.CreatedAt);
+        });
+
+        // ===== SubtitleTrack =====
+        b.Entity<SubtitleTrack>(e =>
+        {
+            e.ToTable("subtitle_tracks");
+            e.HasKey(t => t.Id);
+            e.Property(t => t.Id).HasMaxLength(32);
+            e.Property(t => t.VideoResourceId).HasMaxLength(32).IsRequired();
+            e.Property(t => t.Language).HasMaxLength(32).IsRequired();
+            e.Property(t => t.Label).HasMaxLength(64);
+            e.Property(t => t.StorageKey).HasMaxLength(512).IsRequired();
+            e.Property(t => t.OriginalFileName).HasMaxLength(256).IsRequired();
+            e.HasIndex(t => t.VideoResourceId);
+            // 部分唯一索引：每个视频至多一条默认轨（NULL 不参与）
+            e.HasIndex(t => new { t.VideoResourceId, t.IsDefault })
+                .IsUnique()
+                .HasFilter("\"IsDefault\" IS TRUE")
+                .HasDatabaseName("ix_subtitle_tracks_default_per_video");
+        });
+
+        // ===== VideoStatusEvent =====
+        b.Entity<VideoStatusEvent>(e =>
+        {
+            e.ToTable("video_status_events");
+            e.HasKey(ev => ev.Id);
+            e.Property(ev => ev.Id).HasMaxLength(32);
+            e.Property(ev => ev.VideoResourceId).HasMaxLength(32).IsRequired();
+            e.Property(ev => ev.Status).HasMaxLength(16).IsRequired();
+            e.Property(ev => ev.Message).HasMaxLength(2000);
+            e.HasIndex(ev => ev.VideoResourceId);
         });
     }
 }

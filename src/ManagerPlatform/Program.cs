@@ -19,12 +19,23 @@ using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 上传视频体积较大（数百 MB～GB 级），放开 Kestrel 默认 30MB 请求体上限（2GB，与前端校验一致）；
+// multipart 表单另有独立的 128MB 默认上限（FormOptions），同步放开
+builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 2L * 1024 * 1024 * 1024);
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
+    o.MultipartBodyLengthLimit = 2L * 1024 * 1024 * 1024);
+
 // ===== 配置绑定 =====
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.Configure<SchedulerOptions>(builder.Configuration.GetSection(SchedulerOptions.SectionName));
+builder.Services.Configure<MediaOptions>(builder.Configuration.GetSection(MediaOptions.SectionName));
 
 // ===== 后台服务 =====
 builder.Services.AddHostedService<ManagerPlatform.Services.ConferenceCleanupService>();
+// 视频处理流水线：进程内队列 + Worker（上线替换为队列服务 + 独立 FFmpeg Worker，接口不变）
+builder.Services.AddSingleton<InMemoryVideoPipelineQueue>();
+builder.Services.AddSingleton<IVideoPipelineQueue>(sp => sp.GetRequiredService<InMemoryVideoPipelineQueue>());
+builder.Services.AddHostedService<VideoPipelineWorker>();
 
 // ===== 认证 / 授权 =====
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
@@ -95,10 +106,14 @@ builder.Services.AddScoped<IConferenceStore, EfConferenceStore>();
 builder.Services.AddScoped<IParticipantStore, EfParticipantStore>();
 builder.Services.AddScoped<IAiRoleStore, EfAiRoleStore>();
 builder.Services.AddScoped<IAiSessionStore, EfAiSessionStore>();
+builder.Services.AddScoped<IVideoResourceStore, EfVideoResourceStore>();
+builder.Services.AddScoped<IVideoSubStore, EfVideoSubStore>();
 builder.Services.AddSingleton<JwtTokenService>();
 
 // 调度服务客户端（服务间调用：创建媒体房间 + 签发房间凭证；LiveKit Token 由调度服务签发）
 builder.Services.AddHttpClient<ISchedulerClient, SchedulerClient>();
+// 本地磁盘媒体存储
+builder.Services.AddSingleton<IStorageService, LocalFileStorageService>();
 
 // ===== API 文档 =====
 builder.Services.AddEndpointsApiExplorer();
@@ -172,12 +187,15 @@ app.MapRoomEndpoints();
 app.MapConferenceEndpoints();
 app.MapAiRoleEndpoints();
 app.MapAdminEndpoints();
+app.MapVideoEndpoints();
+app.MapVideoStreamEndpoint();
 
 // 启动期守护：所有要求管理角色(Observer+)的端点必须位于 /api/admin 下，
 // 否则 Nginx 无法按前缀对外隔离管理端接口。违规则拒绝启动（CI/部署即失败）。
 EnsureAdminEndpointsAreIsolated(app.Services);
 
 app.Run();
+
 
 static void EnsureAdminEndpointsAreIsolated(IServiceProvider services)
 {
