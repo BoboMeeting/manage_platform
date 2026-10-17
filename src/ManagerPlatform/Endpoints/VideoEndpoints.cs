@@ -56,6 +56,11 @@ public static class VideoEndpoints
             ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
+             
+             Console.WriteLine($"1 上传视频：{file.FileName}，大小 {file.Length} 字节");
+
+
+
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
             if (file.Length == 0)
                 return Results.BadRequest(new { error = "视频文件为空" });
@@ -74,14 +79,23 @@ public static class VideoEndpoints
                 CreatedBy = cu.UserId,
             };
 
+             Console.WriteLine($"2 上传视频：{video.Title}，大小 {video.FileSizeBytes} 字节");
+
+
             await using var stream = file.OpenReadStream();
             video.StorageKey = await storage.SaveAsync(video.StorageKey, stream, ct);
             await store.AddAsync(video, ct);
             pipeline.Enqueue(new VideoPipelineJob(video.Id, VideoProcessStatus.Probing));
 
+             Console.WriteLine($"3 上传视频：{video.Title}，大小 {video.FileSizeBytes} 字节");
+
+
             logger.LogInformation("审计[上传视频]：操作人={Operator}，资源={Id}，文件={File}，大小={Bytes}",
                 cu.UserId, video.Id, video.OriginalFileName, video.FileSizeBytes);
+
+
             return Results.Created($"/api/admin/videos/{video.Id}", video);
+
         }).DisableAntiforgery();
 
         // 详情：资源 + 字幕轨 + 流水事件
