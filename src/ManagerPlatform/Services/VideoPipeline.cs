@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using ManagerPlatform.Models;
 using ManagerPlatform.Options;
@@ -32,7 +33,8 @@ public sealed class InMemoryVideoPipelineQueue : IVideoPipelineQueue
 
 /// <summary>
 /// 视频处理流水线 Worker（后台服务）。
-/// 状态机（入戏 §3.1）：PROBING（真实 ffprobe）→ TRANSCODING → PACKAGING → SUBTITLING（模拟流转）
+/// 状态机（入戏 §3.1）：PROBING（ffprobe 探测）→ TRANSCODING（原分辨率 HLS 流复制切片，不做转码）
+/// → PACKAGING（生成 master 清单并回填 HlsMasterKey）→ SUBTITLING（模拟流转）
 /// → ANALYZING（占位，深意生成后续由 Agent 服务接入）→ READY。
 /// 任一阶段异常 → FAILED（记录 FailedStage/FailReason，支持从失败点重跑）。
 /// 每阶段写 VideoStatusEvent 流水；状态持久化 DB，进程重启不丢。
@@ -57,7 +59,7 @@ public sealed class VideoPipelineWorker(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("视频流水线 Worker 已启动（探测=ffprobe 真实执行，转码/打包/字幕=模拟流转，深意=Agent 服务）");
+        _logger.LogInformation("视频流水线 Worker 已启动（探测/切片/打包=真实 ffmpeg（原分辨率流复制），字幕=模拟流转，深意=Agent 服务）");
         await foreach (var job in queue.ReadAllAsync(stoppingToken))
         {
             try
@@ -109,9 +111,9 @@ public sealed class VideoPipelineWorker(
                 var message = stage switch
                 {
                     VideoProcessStatus.Probing => await ProbeAsync(video, storage, ct),
-                    VideoProcessStatus.Transcoding => await SimulateAsync(video, "转码切 HLS"),
-                    VideoProcessStatus.Packaging => await SimulateAsync(video, "打包 master 清单"),
-                    VideoProcessStatus.Subtitling => await SimulateAsync(video, "字幕归一化"),
+                    VideoProcessStatus.Transcoding => await SliceAsync(video, storage, ct),
+                    VideoProcessStatus.Packaging => await PackageAsync(video, storage, ct),
+                    VideoProcessStatus.Subtitling => await SimulateAsync("字幕归一化"),
                     VideoProcessStatus.Analyzing => await AnalyzeAsync(),
                     _ => throw new InvalidOperationException($"未知阶段：{stage}"),
                 };
@@ -194,11 +196,129 @@ public sealed class VideoPipelineWorker(
         return $"时长 {FormatDuration(video.DurationMs)}，分辨率 {video.Width}×{video.Height}";
     }
 
-    /// <summary>模拟阶段：延迟后返回描述（上线由 FFmpeg Worker 替代）。</summary>
-    private async Task<string> SimulateAsync(VideoResource video, string what)
+    /// <summary>模拟阶段：延迟后返回描述（字幕归一化暂为模拟，后续接入真实处理）。</summary>
+    private async Task<string> SimulateAsync(string what)
     {
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(0, _options.SimulatedStageSeconds)));
         return $"{what}（模拟流转，{_options.SimulatedStageSeconds}s）";
+    }
+
+    /// <summary>
+    /// TRANSCODING：原分辨率 HLS 切片（流复制封装，不解码不重编码，速度近似磁盘 I/O）。
+    /// 仅要求源编码为 TS/浏览器兼容（H.264+AAC 最稳；HEVC/AC3 等源不转码则不会纠正）；
+    /// 分片边界由源关键帧决定（-hls_time 6 为下限），时长不均匀属预期。
+    /// 重跑前清空旧分片目录。
+    /// </summary>
+    private async Task<string> SliceAsync(VideoResource video, IStorageService storage, CancellationToken ct)
+    {
+        var srcPath = storage.GetPhysicalPath(video.StorageKey)
+            ?? throw new InvalidOperationException($"原始文件不存在：{video.StorageKey}");
+        var hlsDir = Path.Combine(Path.GetDirectoryName(srcPath)!, "hls");
+
+        // 清理旧分片（重试场景）
+        if (Directory.Exists(hlsDir)) Directory.Delete(hlsDir, recursive: true);
+        Directory.CreateDirectory(hlsDir);
+
+        await RunFFmpegAsync(BuildSliceArgs(srcPath, hlsDir), ct);
+
+        if (!File.Exists(Path.Combine(hlsDir, "index.m3u8")))
+            throw new InvalidOperationException("切片输出缺失：hls/index.m3u8");
+
+        var segments = Directory.EnumerateFiles(hlsDir, "*.ts", SearchOption.TopDirectoryOnly).Count();
+        return $"HLS 原分辨率流复制切片，共 {segments} 个分片";
+    }
+
+    /// <summary>
+    /// PACKAGING：生成 master 清单写入存储并回填 HlsMasterKey。
+    /// 流复制无码率目标，BANDWIDTH 按 media 清单中分片字节数/时长实测计算。
+    /// </summary>
+    private async Task<string> PackageAsync(VideoResource video, IStorageService storage, CancellationToken ct)
+    {
+        var srcPath = storage.GetPhysicalPath(video.StorageKey)
+            ?? throw new InvalidOperationException($"原始文件不存在：{video.StorageKey}");
+        var hlsDir = Path.Combine(Path.GetDirectoryName(srcPath)!, "hls");
+        var mediaPath = Path.Combine(hlsDir, "index.m3u8");
+        if (!File.Exists(mediaPath))
+            throw new InvalidOperationException($"媒体清单缺失：videos/{video.Id}/hls/index.m3u8");
+
+        var (bytes, seconds) = SumPlaylist(mediaPath);
+        var bandwidth = seconds > 0 ? Math.Max((long)(bytes * 8 / seconds), 1) : 1;
+
+        var masterKey = $"videos/{video.Id}/hls/master.m3u8";
+        var sb = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:3\n");
+        sb.Append("#EXT-X-STREAM-INF:BANDWIDTH=").Append(bandwidth);
+        if (video.Width is { } w && video.Height is { } h && w > 0 && h > 0)
+            sb.Append(",RESOLUTION=").Append(w).Append('x').Append(h);
+        sb.Append("\nindex.m3u8\n");
+
+        await using var ms = new MemoryStream(Encoding.UTF8.GetBytes(sb.ToString()));
+        await storage.SaveAsync(masterKey, ms, ct);
+        video.HlsMasterKey = masterKey;
+        return $"master 清单打包完成（原分辨率单档，实测码率 {bandwidth / 1000} kbps）";
+    }
+
+    private static string BuildSliceArgs(string srcPath, string hlsDir)
+    {
+        var dir = hlsDir.Replace('\\', '/');
+        var sb = new StringBuilder("-nostdin -y -hide_banner -loglevel error");
+        sb.Append(" -i \"").Append(srcPath.Replace('\\', '/')).Append('"');
+        sb.Append(" -map 0:v:0 -map 0:a:0? -c copy");
+        sb.Append(" -f hls -hls_time 6 -hls_playlist_type vod -hls_list_size 0");
+        sb.Append(" -hls_flags independent_segments -hls_segment_type mpegts");
+        sb.Append(" -hls_segment_filename \"").Append(dir).Append("/seg_%05d.ts\"");
+        sb.Append(" \"").Append(dir).Append("/index.m3u8\"");
+        return sb.ToString();
+    }
+
+    /// <summary>统计 media 清单声明的总时长与分片总字节（用于实测码率）。</summary>
+    private static (long Bytes, double Seconds) SumPlaylist(string playlistPath)
+    {
+        long bytes = 0;
+        double seconds = 0;
+        var dir = Path.GetDirectoryName(playlistPath)!;
+        foreach (var line in File.ReadLines(playlistPath))
+        {
+            if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
+            {
+                var v = line["#EXTINF:".Length..];
+                var comma = v.IndexOf(',');
+                if (comma >= 0) v = v[..comma];
+                if (double.TryParse(v, System.Globalization.CultureInfo.InvariantCulture, out var d))
+                    seconds += d;
+            }
+            else if (line.Length > 0 && !line.StartsWith('#'))
+            {
+                var seg = Path.Combine(dir, line);
+                if (File.Exists(seg)) bytes += new FileInfo(seg).Length;
+            }
+        }
+        return (bytes, seconds);
+    }
+
+    /// <summary>执行 ffmpeg；取消时终止整个进程树，失败抛出含 stderr 摘要的异常。</summary>
+    private async Task RunFFmpegAsync(string arguments, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = _options.FFmpegPath,
+            Arguments = arguments,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("无法启动 ffmpeg 进程");
+        using var _ = ct.Register(() =>
+        {
+            try { proc.Kill(entireProcessTree: true); } catch { /* 进程已退出 */ }
+        });
+        var stderrTask = proc.StandardError.ReadToEndAsync(CancellationToken.None);
+        await proc.WaitForExitAsync(ct);
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException($"ffmpeg 退出码 {proc.ExitCode}：{Truncate(await stderrTask)}");
     }
 
     /// <summary>

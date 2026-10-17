@@ -132,7 +132,9 @@ public static class VideoEndpoints
                 return Results.Conflict(new { error = "资源处理中，不可删除" });
 
             // 删除关联文件与从属记录（存储删除尽力而为，不阻断主流程）
-            var keys = new List<string> { video.StorageKey, video.HlsMasterKey ?? "", video.DeepMeaningKey ?? "" };
+            // HLS 整目录（各码率分片 + master 清单）单独清理，其余按键删
+            await storage.DeleteDirectoryAsync($"videos/{id}/hls", ct);
+            var keys = new List<string> { video.StorageKey, video.DeepMeaningKey ?? "" };
             keys.AddRange((await subs.GetTracksAsync(id, ct)).Select(t => t.StorageKey));
             foreach (var key in keys.Where(k => k.Length > 0))
                 await storage.DeleteAsync(key, ct);

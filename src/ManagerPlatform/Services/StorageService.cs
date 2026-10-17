@@ -12,6 +12,9 @@ public interface IStorageService
     /// <summary>删除对象；对象不存在时静默返回。</summary>
     Task DeleteAsync(string key, CancellationToken ct = default);
 
+    /// <summary>删除键前缀对应的整个目录（HLS 分片等多文件产物清理）；目录不存在时静默返回。</summary>
+    Task DeleteDirectoryAsync(string keyPrefix, CancellationToken ct = default);
+
     /// <summary>打开只读流；对象不存在返回 null。</summary>
     Task<Stream?> OpenReadAsync(string key, CancellationToken ct = default);
 
@@ -65,6 +68,17 @@ public sealed class LocalFileStorageService(Microsoft.Extensions.Options.IOption
         {
             File.Delete(path);
             _logger.LogInformation("存储删除：{Key}", key);
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteDirectoryAsync(string keyPrefix, CancellationToken ct = default)
+    {
+        var path = Physical(keyPrefix);
+        if (Directory.Exists(path))
+        {
+            Directory.Delete(path, recursive: true);
+            _logger.LogInformation("存储目录删除：{KeyPrefix}", keyPrefix);
         }
         return Task.CompletedTask;
     }

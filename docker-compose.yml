@@ -40,14 +40,15 @@ services:
       Scheduler__InternalBaseUrl: ${SCHEDULER_INTERNAL_URL:-http://host.docker.internal:5000}
       Scheduler__ExternalBaseUrl: ${SCHEDULER_EXTERNAL_URL:-http://host.docker.internal:5000}
 
-      # 视频媒体配置（本期：本地磁盘存储 + ffprobe 真实探测，转码/打包/字幕模拟流转）
+      # 视频媒体配置（本期：本地磁盘存储 + ffmpeg 原分辨率流复制切片/打包，不转码；字幕模拟流转）
       # StorageRoot：媒体文件根目录（原始视频/HLS/字幕，单文件最大 2GB）。
       #   默认 /app/storage（相对路径会基于 /app 解析），务必挂卷持久化，否则重建容器丢视频；
       #   需要大容量磁盘时，可在 .env 改容器内路径，或把下方 media-storage 卷改为 bind mount
-      # FFprobePath：ffprobe 可执行文件路径（镜像已内置 ffmpeg，默认取 PATH 即可）
-      # SimulatedStageSeconds：转码/打包/字幕模拟阶段每阶段时长（秒），前端联调用
+      # FFprobePath / FFmpegPath：可执行文件路径（镜像已内置 ffmpeg，默认取 PATH 即可）
+      # SimulatedStageSeconds：字幕模拟阶段时长（秒），前端联调用
       Media__StorageRoot: ${MEDIA_STORAGE_ROOT:-/app/storage}
       Media__FFprobePath: ${MEDIA_FFPROBE_PATH:-ffprobe}
+      Media__FFmpegPath: ${MEDIA_FFMPEG_PATH:-ffmpeg}
       Media__SimulatedStageSeconds: ${MEDIA_SIMULATED_STAGE_SECONDS:-3}
     extra_hosts:
       # 允许容器通过 host.docker.internal 访问宿主机（调度服务在宿主机上运行时必需）

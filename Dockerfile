@@ -32,7 +32,7 @@ WORKDIR /app
 ENV ASPNETCORE_ENVIRONMENT=Production
 ENV ASPNETCORE_URLS=http://+:5080
 
-# 视频处理依赖：ffprobe（探测视频时长/分辨率，对应配置 Media:FFprobePath）
+# 视频处理依赖：ffmpeg/ffprobe（探测 + HLS 转码切片打包，对应配置 Media:FFprobePath / Media:FFmpegPath）
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*

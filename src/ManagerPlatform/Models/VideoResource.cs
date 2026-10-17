@@ -11,9 +11,9 @@ public enum VideoProcessStatus
     Uploading = 0,
     /// <summary>探测中（ffprobe 读取时长/分辨率）</summary>
     Probing = 1,
-    /// <summary>转码中（HLS 切片，本期模拟）</summary>
+    /// <summary>切片中（原分辨率 HLS 流复制封装，不转码）</summary>
     Transcoding = 2,
-    /// <summary>打包中（多码率 master 清单，本期模拟）</summary>
+    /// <summary>打包中（生成 master 清单并回填 HlsMasterKey）</summary>
     Packaging = 3,
     /// <summary>字幕处理中（归一化 VTT，本期模拟）</summary>
     Subtitling = 4,
@@ -68,7 +68,7 @@ public sealed class VideoResource
     /// <summary>原始文件存储键</summary>
     public string StorageKey { get; set; } = string.Empty;
 
-    /// <summary>HLS master 清单存储键（真实转码上线后回填；本期为 null，预览走原始文件流）</summary>
+    /// <summary>HLS master 清单存储键（Packaging 阶段生成后回填，位于 videos/{id}/hls/master.m3u8）</summary>
     public string? HlsMasterKey { get; set; }
 
     /// <summary>深意 JSON（deepMeaning.json）存储键，由 Agent 服务生成后回填</summary>
