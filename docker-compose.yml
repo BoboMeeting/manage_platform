@@ -85,7 +85,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin123}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # bitnami 镜像的数据目录是 /bitnami/postgresql（官方 postgres 镜像才是 /var/lib/postgresql/data）
+      # 挂错路径时数据会写进匿名卷，docker-compose down/up 重建容器后即丢失
+      - postgres-data:/bitnami/postgresql
     # 不暴露端口到宿主机，仅容器网络内可访问（提升安全性）
     # 如需从宿主机直接连接 DB 调试，取消下面注释
     ports:
