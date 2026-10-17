@@ -69,13 +69,17 @@ public static class VideoEndpoints
             if (!AllowedVideoExtensions.Contains(ext))
                 return Results.BadRequest(new { error = $"不支持的格式 {ext}（允许 {string.Join("/", AllowedVideoExtensions)}）" });
 
+            // 资源树统一以 video.Id 为目录标识，保证 original/hls/subtitles/深意在同一目录，
+            // 下游 PackageAsync（master.m3u8 用 video.Id 拼接）与删除端点（videos/{id}/hls）保持一致
+            var videoId = Guid.NewGuid().ToString("N");
             var video = new VideoResource
             {
+                Id = videoId,
                 Title = string.IsNullOrWhiteSpace(title) ? Path.GetFileNameWithoutExtension(file.FileName) : title.Trim(),
                 Description = string.IsNullOrWhiteSpace(description) ? null : description.Trim(),
                 OriginalFileName = Path.GetFileName(file.FileName),
                 FileSizeBytes = file.Length,
-                StorageKey = $"videos/{Guid.NewGuid():N}/original{ext}",
+                StorageKey = $"videos/{videoId}/original{ext}",
                 CreatedBy = cu.UserId,
             };
 

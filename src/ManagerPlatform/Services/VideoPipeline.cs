@@ -34,7 +34,7 @@ public sealed class InMemoryVideoPipelineQueue : IVideoPipelineQueue
 /// <summary>
 /// 视频处理流水线 Worker（后台服务）。
 /// 状态机（入戏 §3.1）：PROBING（ffprobe 探测）→ TRANSCODING（原分辨率 HLS 流复制切片，不做转码）
-/// → PACKAGING（生成 master 清单并回填 HlsMasterKey）→ SUBTITLING（模拟流转）
+/// → PACKAGING（生成 master 清单并回填 HlsMasterKey）→ SUBTITLING（内嵌字幕抽取并归一化 VTT）
 /// → ANALYZING（占位，深意生成后续由 Agent 服务接入）→ READY。
 /// 任一阶段异常 → FAILED（记录 FailedStage/FailReason，支持从失败点重跑）。
 /// 每阶段写 VideoStatusEvent 流水；状态持久化 DB，进程重启不丢。
@@ -59,7 +59,7 @@ public sealed class VideoPipelineWorker(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("视频流水线 Worker 已启动（探测/切片/打包=真实 ffmpeg（原分辨率流复制），字幕=模拟流转，深意=Agent 服务）");
+        _logger.LogInformation("视频流水线 Worker 已启动（探测/切片/打包=真实 ffmpeg（原分辨率流复制），字幕=内嵌字幕抽取归一化，深意=Agent 服务）");
         await foreach (var job in queue.ReadAllAsync(stoppingToken))
         {
             try
@@ -113,7 +113,7 @@ public sealed class VideoPipelineWorker(
                     VideoProcessStatus.Probing => await ProbeAsync(video, storage, ct),
                     VideoProcessStatus.Transcoding => await SliceAsync(video, storage, ct),
                     VideoProcessStatus.Packaging => await PackageAsync(video, storage, ct),
-                    VideoProcessStatus.Subtitling => await SimulateAsync("字幕归一化"),
+                    VideoProcessStatus.Subtitling => await SubtitleAsync(video, storage, subs, ct),
                     VideoProcessStatus.Analyzing => await AnalyzeAsync(),
                     _ => throw new InvalidOperationException($"未知阶段：{stage}"),
                 };
@@ -196,12 +196,188 @@ public sealed class VideoPipelineWorker(
         return $"时长 {FormatDuration(video.DurationMs)}，分辨率 {video.Width}×{video.Height}";
     }
 
-    /// <summary>模拟阶段：延迟后返回描述（字幕归一化暂为模拟，后续接入真实处理）。</summary>
-    private async Task<string> SimulateAsync(string what)
+    // ===== SUBTITLING：内嵌字幕抽取与归一化 =====
+
+    /// <summary>文本类字幕编码（可 ffmpeg 转 SRT 后归一化）；其余（PGS/DVB 等位图/专有格式）跳过。</summary>
+    private static readonly HashSet<string> TextSubtitleCodecs = ["subrip", "ass", "ssa", "mov_text", "webvtt"];
+
+    private sealed record SubtitleStreamProbe(int Index, string Codec, string? Language, string? Title, bool Default);
+
+    /// <summary>
+    /// SUBTITLING：字幕归一化。探测源文件内嵌字幕流，文本类（SRT/ASS/mov_text/WebVTT）逐路
+    /// ffmpeg 抽取为 SRT，经 SubtitleConverter 归一化为 WebVTT 入库（Source=Extracted）；
+    /// 位图/专有字幕流无法转文本，跳过并计数；源无字幕流则直接通过。
+    /// 单路抽取失败不阻断整体；重跑前清理上次抽取的轨（管理员上传的字幕不受影响）。
+    /// </summary>
+    private async Task<string> SubtitleAsync(
+        VideoResource video, IStorageService storage, IVideoSubStore subs, CancellationToken ct)
     {
-        await Task.Delay(TimeSpan.FromSeconds(Math.Max(0, _options.SimulatedStageSeconds)));
-        return $"{what}（模拟流转，{_options.SimulatedStageSeconds}s）";
+        var srcPath = storage.GetPhysicalPath(video.StorageKey)
+            ?? throw new InvalidOperationException($"原始文件不存在：{video.StorageKey}");
+
+        // 重跑清理：仅移除上次抽取的轨，管理员上传的字幕保留
+        var existing = await subs.GetTracksAsync(video.Id, ct);
+        foreach (var old in existing.Where(t => t.Source == SubtitleSource.Extracted))
+        {
+            await storage.DeleteAsync(old.StorageKey, ct);
+            await subs.DeleteTrackAsync(video.Id, old.Id, ct);
+        }
+        var hasUploadedDefault = existing.Any(t => t.IsDefault && t.Source == SubtitleSource.Uploaded);
+
+        var streams = await ProbeSubtitleStreamsAsync(srcPath, ct);
+        if (streams.Count == 0)
+            return "源无内嵌字幕流，跳过（可上传外挂字幕补充）";
+
+        var extracted = new List<(SubtitleTrack Track, bool Default)>();
+        var skipped = 0;
+        var failed = 0;
+        foreach (var s in streams)
+        {
+            if (!TextSubtitleCodecs.Contains(s.Codec))
+            {
+                skipped++;
+                continue;
+            }
+
+            try
+            {
+                var srt = await ExtractSubtitleSrtAsync(srcPath, s.Index, ct);
+                var (vtt, cueCount) = SubtitleConverter.SrtToVtt(srt);
+                if (cueCount == 0)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var track = new SubtitleTrack
+                {
+                    VideoResourceId = video.Id,
+                    Language = MapLanguage(s.Language),
+                    Label = s.Title,
+                    Source = SubtitleSource.Extracted,
+                    StorageKey = $"videos/{video.Id}/subtitles/{Guid.NewGuid():N}.vtt",
+                    CueCount = cueCount,
+                    OriginalFileName = $"{Path.GetFileNameWithoutExtension(video.OriginalFileName)}.0:{s.Index}.srt",
+                };
+                await using var ms = new MemoryStream(Encoding.UTF8.GetBytes(vtt));
+                await storage.SaveAsync(track.StorageKey, ms, ct);
+                extracted.Add((track, s.Default));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                _logger.LogWarning(ex, "视频 {VideoId} 内嵌字幕流 0:{Index}（{Codec}）抽取失败",
+                    video.Id, s.Index, s.Codec);
+            }
+        }
+
+        // 默认轨：优先流 disposition.default 标记；单路无标记时即默认；不抢占已上传的默认轨
+        var defaultIdx = extracted.FindIndex(e => e.Default);
+        if (defaultIdx < 0 && extracted.Count == 1) defaultIdx = 0;
+        if (defaultIdx >= 0 && !hasUploadedDefault)
+            extracted[defaultIdx].Track.IsDefault = true;
+
+        foreach (var (track, _) in extracted)
+            await subs.AddTrackAsync(track, ct);
+
+        if (extracted.Count == 0 && failed == 0)
+            return $"内嵌字幕 {skipped} 路均为位图/空轨，无法归一化，跳过";
+
+        var parts = new List<string>();
+        if (extracted.Count > 0) parts.Add($"抽取内嵌字幕 {extracted.Count} 路并归一化 VTT 入库");
+        if (failed > 0) parts.Add($"{failed} 路抽取失败");
+        if (skipped > 0) parts.Add($"跳过 {skipped} 路（位图/空轨）");
+        return string.Join("，", parts);
     }
+
+    /// <summary>探测源文件内嵌字幕流（绝对流序号/编码/语言/标题/默认标记）。</summary>
+    private async Task<List<SubtitleStreamProbe>> ProbeSubtitleStreamsAsync(string srcPath, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = _options.FFprobePath,
+            Arguments = $"-v error -print_format json -select_streams s -show_streams \"{srcPath.Replace('\\', '/')}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("无法启动 ffprobe 进程");
+        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
+        var stderr = await proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException($"ffprobe 退出码 {proc.ExitCode}：{Truncate(stderr)}");
+
+        var result = new List<SubtitleStreamProbe>();
+        using var doc = JsonDocument.Parse(stdout);
+        if (!doc.RootElement.TryGetProperty("streams", out var streams)) return result;
+
+        foreach (var s in streams.EnumerateArray())
+        {
+            var codec = s.TryGetProperty("codec_name", out var c) ? c.GetString() : null;
+            if (string.IsNullOrEmpty(codec)) continue;
+
+            string? lang = null, title = null;
+            if (s.TryGetProperty("tags", out var tags))
+            {
+                if (tags.TryGetProperty("language", out var l)) lang = l.GetString();
+                if (tags.TryGetProperty("title", out var t)) title = t.GetString();
+            }
+            var isDefault = s.TryGetProperty("disposition", out var disp)
+                && disp.TryGetProperty("default", out var d) && d.GetInt32() == 1;
+
+            result.Add(new SubtitleStreamProbe(
+                s.TryGetProperty("index", out var idx) ? idx.GetInt32() : -1,
+                codec, NullIfEmpty(lang), NullIfEmpty(title), isDefault));
+        }
+        return result;
+    }
+
+    /// <summary>抽取单路内嵌字幕为 SRT 文本（ffmpeg 转码，顺带统一 UTF-8）；临时文件用后即删。</summary>
+    private async Task<string> ExtractSubtitleSrtAsync(string srcPath, int streamIndex, CancellationToken ct)
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"sub_{Guid.NewGuid():N}.srt");
+        try
+        {
+            await RunFFmpegAsync(
+                $"-nostdin -y -hide_banner -loglevel error -i \"{srcPath.Replace('\\', '/')}\" " +
+                $"-map 0:{streamIndex} -c:s srt \"{tmp.Replace('\\', '/')}\"", ct);
+            return await File.ReadAllTextAsync(tmp, Encoding.UTF8, ct);
+        }
+        finally
+        {
+            File.Delete(tmp);
+        }
+    }
+
+    /// <summary>ffprobe 语言标签（ISO 639-2/1）→ 简化 BCP-47 主子标签；缺失记为 und。</summary>
+    private static string MapLanguage(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "und";
+        var lang = raw.Trim().ToLowerInvariant();
+        return lang switch
+        {
+            "chi" or "zho" => "zh",
+            "eng" => "en",
+            "jpn" => "ja",
+            "kor" => "ko",
+            "fre" or "fra" => "fr",
+            "ger" or "deu" => "de",
+            "rus" => "ru",
+            "spa" => "es",
+            _ => lang,
+        };
+    }
+
+    private static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     /// <summary>
     /// TRANSCODING：原分辨率 HLS 切片（流复制封装，不解码不重编码，速度近似磁盘 I/O）。

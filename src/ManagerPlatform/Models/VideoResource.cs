@@ -15,7 +15,7 @@ public enum VideoProcessStatus
     Transcoding = 2,
     /// <summary>打包中（生成 master 清单并回填 HlsMasterKey）</summary>
     Packaging = 3,
-    /// <summary>字幕处理中（归一化 VTT，本期模拟）</summary>
+    /// <summary>字幕处理中（内嵌字幕抽取，归一化 VTT）</summary>
     Subtitling = 4,
     /// <summary>深意分析中（Agent 服务 LLM 生成，未配置时跳过）</summary>
     Analyzing = 5,
