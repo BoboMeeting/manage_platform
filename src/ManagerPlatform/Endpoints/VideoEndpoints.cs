@@ -119,7 +119,7 @@ public static class VideoEndpoints
                 await subs.GetEventsAsync(id, ct)));
         });
 
-        // 删除：处理中不允许（流水线 Worker 持有文件）；就绪/失败可删
+        // 删除：活跃处理阶段不允许；就绪/失败/SUBTITLING等待态可删
         group.MapDelete("/{id}", async (
             string id,
             HttpContext ctx,
@@ -132,7 +132,8 @@ public static class VideoEndpoints
             if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
             var video = await store.GetByIdAsync(id, ct);
             if (video is null) return Results.NotFound(new { error = "视频资源不存在" });
-            if (video.ProcessStatus is not (VideoProcessStatus.Ready or VideoProcessStatus.Failed))
+            // 删除：仅活跃处理阶段（Probing~Analyzing）不允许；就绪/失败/SUBTITLING等待态可删
+            if (video.ProcessStatus is not (VideoProcessStatus.Ready or VideoProcessStatus.Failed or VideoProcessStatus.Subtitling))
                 return Results.Conflict(new { error = "资源处理中，不可删除" });
 
             // 删除关联文件与从属记录（存储删除尽力而为，不阻断主流程）
@@ -218,6 +219,7 @@ public static class VideoEndpoints
             IVideoResourceStore store,
             IVideoSubStore subs,
             IStorageService storage,
+            IVideoPipelineQueue pipeline,
             ILogger<ApiLog> logger,
             CancellationToken ct) =>
         {
@@ -261,6 +263,12 @@ public static class VideoEndpoints
             await using var outStream = new MemoryStream(Encoding.UTF8.GetBytes(vtt));
             await storage.SaveAsync(track.StorageKey, outStream, ct);
             await subs.AddTrackAsync(track, ct);
+
+            // 若视频正停在 SUBTITLING 等待字幕，上传后自动接续流水线继续后续阶段
+            if (video.ProcessStatus == VideoProcessStatus.Subtitling)
+            {
+                pipeline.Enqueue(new VideoPipelineJob(video.Id, VideoProcessStatus.Subtitling));
+            }
 
             logger.LogInformation("审计[上传字幕]：操作人={Operator}，资源={Id}，轨={TrackId}，语言={Lang}，{Cues} 条 cue",
                 cu.UserId, id, track.Id, track.Language, cueCount);

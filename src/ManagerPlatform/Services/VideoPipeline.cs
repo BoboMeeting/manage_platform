@@ -108,18 +108,26 @@ public sealed class VideoPipelineWorker(
                 await resources.UpdateAsync(video, ct);
                 await AddEventAsync(subs, video.Id, stage, "running", ct);
 
-                var message = stage switch
+                var (message, hasSubtitles) = stage switch
                 {
-                    VideoProcessStatus.Probing => await ProbeAsync(video, storage, ct),
-                    VideoProcessStatus.Transcoding => await SliceAsync(video, storage, ct),
-                    VideoProcessStatus.Packaging => await PackageAsync(video, storage, ct),
+                    VideoProcessStatus.Probing => (await ProbeAsync(video, storage, ct), true),
+                    VideoProcessStatus.Transcoding => (await SliceAsync(video, storage, ct), true),
+                    VideoProcessStatus.Packaging => (await PackageAsync(video, storage, ct), true),
                     VideoProcessStatus.Subtitling => await SubtitleAsync(video, storage, subs, ct),
-                    VideoProcessStatus.Analyzing => await AnalyzeAsync(),
+                    VideoProcessStatus.Analyzing => (await AnalyzeAsync(), true),
                     _ => throw new InvalidOperationException($"未知阶段：{stage}"),
                 };
 
                 await AddEventAsync(subs, video.Id, stage, "succeeded", ct, message);
                 _logger.LogInformation("视频 {VideoId} 阶段 {Stage} 完成：{Message}", video.Id, stage, message);
+
+                // SUBTITLING 无字幕（内嵌+上传均无）：停留在 SUBTITLING 等待上传，直接返回，
+                // 不进入后续阶段、且不得走到循环外的 READY 赋值
+                if (!hasSubtitles)
+                {
+                    _logger.LogInformation("视频 {VideoId} 无字幕，停留在 SUBTITLING 等待上传", video.Id);
+                    return;
+                }
             }
 
             video.ProcessStatus = VideoProcessStatus.Ready;
@@ -206,10 +214,12 @@ public sealed class VideoPipelineWorker(
     /// <summary>
     /// SUBTITLING：字幕归一化。探测源文件内嵌字幕流，文本类（SRT/ASS/mov_text/WebVTT）逐路
     /// ffmpeg 抽取为 SRT，经 SubtitleConverter 归一化为 WebVTT 入库（Source=Extracted）；
-    /// 位图/专有字幕流无法转文本，跳过并计数；源无字幕流则直接通过。
+    /// 位图/专有字幕流无法转文本，跳过并计数。
+    /// 返回 HasSubtitles=true 表示已有可用字幕（内嵌或上传），流水线可继续；
+    /// false 表示既无内嵌也未上传，流水线应停留在 SUBTITLING 等待上传。
     /// 单路抽取失败不阻断整体；重跑前清理上次抽取的轨（管理员上传的字幕不受影响）。
     /// </summary>
-    private async Task<string> SubtitleAsync(
+    private async Task<(string Message, bool HasSubtitles)> SubtitleAsync(
         VideoResource video, IStorageService storage, IVideoSubStore subs, CancellationToken ct)
     {
         var srcPath = storage.GetPhysicalPath(video.StorageKey)
@@ -223,10 +233,17 @@ public sealed class VideoPipelineWorker(
             await subs.DeleteTrackAsync(video.Id, old.Id, ct);
         }
         var hasUploadedDefault = existing.Any(t => t.IsDefault && t.Source == SubtitleSource.Uploaded);
+        var uploadedCount = existing.Count(t => t.Source == SubtitleSource.Uploaded);
 
         var streams = await ProbeSubtitleStreamsAsync(srcPath, ct);
         if (streams.Count == 0)
-            return "源无内嵌字幕流，跳过（可上传外挂字幕补充）";
+        {
+            var hasSubs = uploadedCount > 0;
+            return (hasSubs
+                    ? "源无内嵌字幕流，已有上传字幕，继续"
+                    : "源无内嵌字幕流且未上传字幕，等待上传",
+                hasSubs);
+        }
 
         var extracted = new List<(SubtitleTrack Track, bool Default)>();
         var skipped = 0;
@@ -284,14 +301,16 @@ public sealed class VideoPipelineWorker(
         foreach (var (track, _) in extracted)
             await subs.AddTrackAsync(track, ct);
 
+        var hasSubtitles = uploadedCount > 0 || extracted.Count > 0;
         if (extracted.Count == 0 && failed == 0)
-            return $"内嵌字幕 {skipped} 路均为位图/空轨，无法归一化，跳过";
+            return ($"内嵌字幕 {skipped} 路均为位图/空轨，无法归一化{(hasSubtitles ? "，已有上传字幕" : "，等待上传")}",
+                hasSubtitles);
 
         var parts = new List<string>();
         if (extracted.Count > 0) parts.Add($"抽取内嵌字幕 {extracted.Count} 路并归一化 VTT 入库");
         if (failed > 0) parts.Add($"{failed} 路抽取失败");
         if (skipped > 0) parts.Add($"跳过 {skipped} 路（位图/空轨）");
-        return string.Join("，", parts);
+        return (string.Join("，", parts), hasSubtitles);
     }
 
     /// <summary>探测源文件内嵌字幕流（绝对流序号/编码/语言/标题/默认标记）。</summary>
