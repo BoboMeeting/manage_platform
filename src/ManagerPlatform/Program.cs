@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
+using ModelContextProtocol.Server;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -119,6 +120,16 @@ builder.Services.AddSingleton<IStorageService, LocalFileStorageService>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 
+// ===== MCP Server：为 AI Agent 提供工具调用能力（HTTP transport，无状态）=====
+builder.Services
+    .AddMcpServer()
+    .WithHttpTransport(options =>
+    {
+        // 不需要服务端主动向客户端发起请求（如采样），使用无状态模式
+        options.Stateless = true;
+    })
+    .WithToolsFromAssembly();
+
 var app = builder.Build();
 
 // ===== 数据库初始化：启动期应用迁移（生产推荐该方式）=====
@@ -181,6 +192,9 @@ app.Use(async (context, next) =>
 
 app.MapGet("/healthz", () => Results.Ok(new { ok = true, ts = DateTimeOffset.UtcNow }))
    .WithTags("System");
+
+// MCP Server 端点：AI Agent 通过 HTTP 调用工具，无需 JWT 认证
+app.MapMcp("/mcp");
 
 app.MapAuthEndpoints();
 app.MapRoomEndpoints();
