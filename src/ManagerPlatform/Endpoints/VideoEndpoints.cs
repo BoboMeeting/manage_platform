@@ -296,17 +296,27 @@ public static class VideoEndpoints
 
         // ===== 播放 =====
 
-        // 签名播放地址：短时效 HMAC token（对齐入戏 §3.3：客户端不持有长期密钥，
-        // 上线后签名 URL 指向 CDN，散会后 token 失效的会议级限制由后续播放控制面实现）
+        // 播放地址：就绪资源返回 nginx 直出的 HLS master 清单地址（内网阶段无签名，
+        // 上线后指向 CDN/加签）；未就绪资源回退为短时效 HMAC 签名 URL 流式预览原始文件
         group.MapGet("/{id}/play-url", async (
             string id,
             HttpContext ctx,
             IVideoResourceStore store,
+            IOptions<MediaOptions> media,
             CancellationToken ct) =>
         {
             if (ctx.User.ToCurrentUser() is null) return Results.Unauthorized();
             var video = await store.GetByIdAsync(id, ct);
             if (video is null) return Results.NotFound(new { error = "视频资源不存在" });
+
+            var publicBase = media.Value.PublicBaseUrl?.TrimEnd('/');
+            if (video.ProcessStatus == VideoProcessStatus.Ready
+                && !string.IsNullOrEmpty(video.HlsMasterKey)
+                && !string.IsNullOrEmpty(publicBase))
+            {
+                // ExpiresInSeconds=0 表示不过期（nginx 静态直出无签名）
+                return Results.Ok(new PlayUrlResponse($"{publicBase}/{video.HlsMasterKey}", 0));
+            }
 
             var expiresInSeconds = 1800;
             var exp = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + expiresInSeconds;
@@ -343,7 +353,7 @@ public static class VideoEndpoints
             var video = await store.GetByIdAsync(id, ct);
             if (video is null) return Results.NotFound(new { error = "视频资源不存在" });
 
-            // 本期预览原始文件；HLS 上线后此处返回 master 清单（代理 CDN 或本地切片）
+            // 未就绪资源的原始文件预览回退；就绪资源的 HLS 播放由 nginx 静态直出（见 play-url）
             var path = storage.GetPhysicalPath(video.StorageKey);
             if (path is null) return Results.NotFound(new { error = "视频文件不存在" });
 

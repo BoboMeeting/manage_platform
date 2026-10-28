@@ -22,4 +22,10 @@ public sealed class MediaOptions
 
     /// <summary>占位阶段（深意分析）的每阶段时长（秒），用于前端联调</summary>
     public int SimulatedStageSeconds { get; set; } = 3;
+
+    /// <summary>
+    /// HLS 点播对外基址（nginx 静态服务，如 http://host:8088/media），
+    /// play-url 返回 {PublicBaseUrl}/{HlsMasterKey}；未配置时回退为后端签名流式预览原始文件。
+    /// </summary>
+    public string? PublicBaseUrl { get; set; }
 }
