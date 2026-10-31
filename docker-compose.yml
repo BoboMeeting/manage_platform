@@ -79,7 +79,8 @@ services:
   # PostgreSQL 数据库
   # ============================================================================
   postgres:
-    image: bitnami/postgresql:16
+    # 内置 pgvector 扩展，用于知识库向量检索（kb_chunks.embedding vector(1024)）
+    image: pgvector/pgvector:pg17
     platform: linux/amd64
     container_name: bobomeet-postgres
     restart: unless-stopped
@@ -88,9 +89,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin123}
     volumes:
-      # bitnami 镜像的数据目录是 /bitnami/postgresql（官方 postgres 镜像才是 /var/lib/postgresql/data）
-      # 挂错路径时数据会写进匿名卷，docker-compose down/up 重建容器后即丢失
-      - postgres-data:/bitnami/postgresql
+      # pgvector/pgvector 基于官方 postgres 镜像，数据目录为 /var/lib/postgresql/data
+      # （原 bitnami 镜像使用 /bitnami/postgresql，已随镜像切换一并重建开发库）
+      - postgres-data-v2:/var/lib/postgresql/data
     # 不暴露端口到宿主机，仅容器网络内可访问（提升安全性）
     # 如需从宿主机直接连接 DB 调试，取消下面注释
     ports:
@@ -126,7 +127,7 @@ services:
       - bobomeet
 
 volumes:
-  postgres-data:
+  postgres-data-v2:
   dp-keys:
   media-storage:
 

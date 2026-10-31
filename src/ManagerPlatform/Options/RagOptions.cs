@@ -1,0 +1,44 @@
+namespace ManagerPlatform.Options;
+
+/// <summary>
+/// RAG 知识库配置（appsettings.json "Rag" 节，
+/// 可用环境变量 Rag__EmbeddingApiKey 等覆盖）。
+/// 一期：dense 向量检索（pgvector），不做 rerank / hybrid。
+/// </summary>
+public sealed class RagOptions
+{
+    public const string SectionName = "Rag";
+
+    /// <summary>embedding 服务地址（OpenAI 兼容）。如 SiliconFlow：https://api.siliconflow.cn/v1</summary>
+    public string EmbeddingBaseUrl { get; set; } = "https://api.siliconflow.cn/v1";
+
+    /// <summary>embedding 服务 API Key（必填，启动期校验非空）。</summary>
+    public string EmbeddingApiKey { get; set; } = string.Empty;
+
+    /// <summary>embedding 模型名。如 BAAI/bge-m3（维度 1024）。</summary>
+    public string EmbeddingModel { get; set; } = "BAAI/bge-m3";
+
+    /// <summary>embedding 向量维度，须与 <see cref="EmbeddingModel"/> 一致。</summary>
+    public int EmbeddingDim { get; set; } = 1024;
+
+    /// <summary>单次批量 embedding 的文本条数。</summary>
+    public int EmbeddingBatchSize { get; set; } = 32;
+
+    /// <summary>embedding HTTP 超时（秒）。</summary>
+    public int EmbeddingTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>默认返回 top-k 片段。</summary>
+    public int DefaultTopK { get; set; } = 3;
+
+    /// <summary>top-k 上限。</summary>
+    public int MaxTopK { get; set; } = 5;
+
+    /// <summary>相似度阈值（余弦），低于此值视为未命中。</summary>
+    public double MinScore { get; set; } = 0.3;
+
+    /// <summary>切分单段字符数上限。</summary>
+    public int ChunkSize { get; set; } = 500;
+
+    /// <summary>切分重叠字符数（须小于 <see cref="ChunkSize"/>）。</summary>
+    public int ChunkOverlap { get; set; } = 80;
+}

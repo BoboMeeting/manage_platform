@@ -17,6 +17,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
 using ModelContextProtocol.Server;
+using Pgvector;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -30,6 +31,12 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.Configure<SchedulerOptions>(builder.Configuration.GetSection(SchedulerOptions.SectionName));
 builder.Services.Configure<MediaOptions>(builder.Configuration.GetSection(MediaOptions.SectionName));
+builder.Services.Configure<RagOptions>(builder.Configuration.GetSection(RagOptions.SectionName));
+
+// RAG embedding API Key 必填：缺则无法生成向量索引，启动即失败
+var rag = builder.Configuration.GetSection(RagOptions.SectionName).Get<RagOptions>() ?? new RagOptions();
+if (string.IsNullOrWhiteSpace(rag.EmbeddingApiKey))
+    throw new InvalidOperationException("缺少 RAG 配置：Rag:EmbeddingApiKey 未设置（embedding 服务 API Key）");
 
 // ===== 后台服务 =====
 builder.Services.AddHostedService<ManagerPlatform.Services.ConferenceCleanupService>();
@@ -99,7 +106,7 @@ builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(d
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("未配置数据库连接字符串 ConnectionStrings:DefaultConnection");
 builder.Services.AddDbContext<AppDbContext>(opt =>
-    opt.UseNpgsql(connectionString));
+    opt.UseNpgsql(connectionString, o => o.UseVector()));
 // 注册 EF Core 各 Store（Scoped）
 builder.Services.AddScoped<IUserStore, EfUserStore>();
 builder.Services.AddScoped<IRoomStore, EfRoomStore>();

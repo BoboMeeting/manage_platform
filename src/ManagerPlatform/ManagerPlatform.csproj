@@ -14,6 +14,7 @@
     <!-- LiveKit Token 由调度服务（meet_schedule_server）签发，管理平台不再依赖 LiveKit SDK -->
     <!-- .NET 10 内置 OpenAPI 文档生成 -->
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.*" />
+    <PackageReference Include="Pgvector.EntityFrameworkCore" Version="0.3.0" />
     <!-- API 文档 UI（Scalar） -->
     <PackageReference Include="Scalar.AspNetCore" Version="2.0.*" />
     <!-- EF Core + PostgreSQL 持久化 -->

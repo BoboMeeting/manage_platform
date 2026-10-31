@@ -28,6 +28,10 @@ public sealed class AppDbContext : DbContext
     {
         base.OnModelCreating(b);
 
+        // ===== PostgreSQL 扩展 =====
+        // vector：pgvector 向量类型，知识库片段 embedding 列 vector(1024) 依赖此扩展
+        b.HasPostgresExtension("vector");
+
         // ===== User =====
         b.Entity<User>(e =>
         {
