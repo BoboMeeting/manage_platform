@@ -49,6 +49,17 @@ builder.Services.AddSingleton<InMemoryVideoPipelineQueue>();
 builder.Services.AddSingleton<IVideoPipelineQueue>(sp => sp.GetRequiredService<InMemoryVideoPipelineQueue>());
 builder.Services.AddHostedService<VideoPipelineWorker>();
 
+// 知识库导入流水线：进程内队列 + Worker（解析→切分→embedding→入库）；
+// 文档解析器无状态，按扩展名由 Worker 选择；embedding 客户端的超时/重试/维度校验见实现
+builder.Services.AddSingleton<InMemoryKbIngestQueue>();
+builder.Services.AddSingleton<IKbIngestQueue>(sp => sp.GetRequiredService<InMemoryKbIngestQueue>());
+builder.Services.AddHostedService<KbIngestWorker>();
+builder.Services.AddSingleton<IDocumentParser, PlainTextParser>();
+builder.Services.AddSingleton<IDocumentParser, MarkdownParser>();
+builder.Services.AddSingleton<IDocumentParser, DocxParser>();
+builder.Services.AddSingleton<IDocumentParser, PdfParser>();
+builder.Services.AddHttpClient<IEmbeddingClient, OpenAiEmbeddingClient>();
+
 // ===== 认证 / 授权 =====
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

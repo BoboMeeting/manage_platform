@@ -26,6 +26,11 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.*" />
     <!-- MCP Server：为 AI Agent 提供工具调用能力 -->
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+    <!-- RAG 文档解析：PDF 文本层（PdfPig）+ DOCX（Open XML） -->
+    <PackageReference Include="PdfPig" Version="0.1.9" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.1.0" />
+    <!-- Open XML 的传递依赖固定在高版本：8.0.0 存在已知高危漏洞（NU1903） -->
+    <PackageReference Include="System.IO.Packaging" Version="10.0.*" />
   </ItemGroup>
 
 </Project>
