@@ -132,6 +132,9 @@ builder.Services.AddScoped<IAiSessionStore, EfAiSessionStore>();
 builder.Services.AddScoped<IVideoResourceStore, EfVideoResourceStore>();
 builder.Services.AddScoped<IVideoSubStore, EfVideoSubStore>();
 builder.Services.AddScoped<IKnowledgeBaseStore, EfKnowledgeBaseStore>();
+// RAG 检索：query embedding LRU 缓存为进程级单例（跨请求复用），检索服务 Scoped（依赖 Scoped Store）
+builder.Services.AddSingleton<QueryEmbeddingCache>();
+builder.Services.AddScoped<IRetrievalService, RetrievalService>();
 builder.Services.AddSingleton<JwtTokenService>();
 
 // 调度服务客户端（服务间调用：创建媒体房间 + 签发房间凭证；LiveKit Token 由调度服务签发）
