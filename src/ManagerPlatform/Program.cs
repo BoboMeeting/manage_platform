@@ -37,6 +37,10 @@ builder.Services.Configure<RagOptions>(builder.Configuration.GetSection(RagOptio
 var rag = builder.Configuration.GetSection(RagOptions.SectionName).Get<RagOptions>() ?? new RagOptions();
 if (string.IsNullOrWhiteSpace(rag.EmbeddingApiKey))
     throw new InvalidOperationException("缺少 RAG 配置：Rag:EmbeddingApiKey 未设置（embedding 服务 API Key）");
+// 向量维度必须与 kb_chunks 的定长列一致，否则插入会被数据库拒绝
+if (rag.EmbeddingDim != KbChunk.EmbeddingDimension)
+    throw new InvalidOperationException(
+        $"RAG 配置维度不一致：Rag:EmbeddingDim={rag.EmbeddingDim}，数据库列固定为 {KbChunk.EmbeddingDimension}");
 
 // ===== 后台服务 =====
 builder.Services.AddHostedService<ManagerPlatform.Services.ConferenceCleanupService>();
@@ -116,6 +120,7 @@ builder.Services.AddScoped<IAiRoleStore, EfAiRoleStore>();
 builder.Services.AddScoped<IAiSessionStore, EfAiSessionStore>();
 builder.Services.AddScoped<IVideoResourceStore, EfVideoResourceStore>();
 builder.Services.AddScoped<IVideoSubStore, EfVideoSubStore>();
+builder.Services.AddScoped<IKnowledgeBaseStore, EfKnowledgeBaseStore>();
 builder.Services.AddSingleton<JwtTokenService>();
 
 // 调度服务客户端（服务间调用：创建媒体房间 + 签发房间凭证；LiveKit Token 由调度服务签发）

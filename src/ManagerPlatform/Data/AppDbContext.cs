@@ -23,6 +23,11 @@ public sealed class AppDbContext : DbContext
     public DbSet<VideoResource> VideoResources => Set<VideoResource>();
     public DbSet<SubtitleTrack> SubtitleTracks => Set<SubtitleTrack>();
     public DbSet<VideoStatusEvent> VideoStatusEvents => Set<VideoStatusEvent>();
+    public DbSet<KnowledgeBase> KnowledgeBases => Set<KnowledgeBase>();
+    public DbSet<KbDocument> KbDocuments => Set<KbDocument>();
+    public DbSet<KbChunk> KbChunks => Set<KbChunk>();
+    public DbSet<KbIngestEvent> KbIngestEvents => Set<KbIngestEvent>();
+    public DbSet<RetrievalLog> RetrievalLogs => Set<RetrievalLog>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -184,6 +189,101 @@ public sealed class AppDbContext : DbContext
             e.Property(ev => ev.Status).HasMaxLength(16).IsRequired();
             e.Property(ev => ev.Message).HasMaxLength(2000);
             e.HasIndex(ev => ev.VideoResourceId);
+        });
+
+        // ===== KnowledgeBase =====
+        b.Entity<KnowledgeBase>(e =>
+        {
+            e.ToTable("knowledge_bases", t =>
+                t.HasCheckConstraint("ck_knowledge_bases_overlap",
+                    "\"ChunkOverlap\" >= 0 AND \"ChunkOverlap\" < \"ChunkSize\""));
+            e.HasKey(k => k.Id);
+            e.Property(k => k.Id).HasMaxLength(32);
+            e.Property(k => k.Name).HasMaxLength(128).IsRequired();
+            e.Property(k => k.Description).HasMaxLength(2000);
+            e.Property(k => k.EmbeddingModel).HasMaxLength(128).IsRequired();
+            e.Property(k => k.ChunkSize).HasDefaultValue(500);
+            e.Property(k => k.ChunkOverlap).HasDefaultValue(80);
+            e.Property(k => k.CreatedBy).HasMaxLength(32).IsRequired();
+            e.HasIndex(k => k.Name).IsUnique();
+        });
+
+        // ===== KbDocument =====
+        b.Entity<KbDocument>(e =>
+        {
+            e.ToTable("kb_documents");
+            e.HasKey(d => d.Id);
+            e.Property(d => d.Id).HasMaxLength(32);
+            e.Property(d => d.KnowledgeBaseId).HasMaxLength(32).IsRequired();
+            e.Property(d => d.Title).HasMaxLength(256).IsRequired();
+            e.Property(d => d.OriginalFileName).HasMaxLength(256).IsRequired();
+            e.Property(d => d.ContentType).HasMaxLength(128);
+            e.Property(d => d.StorageKey).HasMaxLength(512).IsRequired();
+            e.Property(d => d.Checksum).HasMaxLength(64);
+            e.Property(d => d.ErrorMessage).HasMaxLength(2000);
+            e.Property(d => d.CreatedBy).HasMaxLength(32).IsRequired();
+            // 删除知识库时级联删除文档（chunk 再由文档级联删除）
+            e.HasOne<KnowledgeBase>().WithMany()
+                .HasForeignKey(d => d.KnowledgeBaseId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(d => new { d.KnowledgeBaseId, d.Status });
+            // 同库内 checksum 唯一：重复上传直接复用（NULL 不参与）
+            e.HasIndex(d => new { d.KnowledgeBaseId, d.Checksum })
+                .IsUnique()
+                .HasFilter("\"Checksum\" IS NOT NULL")
+                .HasDatabaseName("ix_kb_documents_checksum");
+        });
+
+        // ===== KbChunk =====
+        b.Entity<KbChunk>(e =>
+        {
+            e.ToTable("kb_chunks");
+            e.HasKey(c => c.Id);
+            e.Property(c => c.Id).HasMaxLength(32);
+            e.Property(c => c.KnowledgeBaseId).HasMaxLength(32).IsRequired();
+            e.Property(c => c.DocumentId).HasMaxLength(32).IsRequired();
+            e.Property(c => c.Content).IsRequired();
+            e.Property(c => c.HeadingPath).HasMaxLength(512);
+            // pgvector 向量列，维度必须与 KbChunk.EmbeddingDimension 一致
+            e.Property(c => c.Embedding)
+                .HasColumnType($"vector({KbChunk.EmbeddingDimension})")
+                .IsRequired();
+            e.HasOne<KbDocument>().WithMany()
+                .HasForeignKey(c => c.DocumentId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(c => new { c.DocumentId, c.Seq }).IsUnique();
+            e.HasIndex(c => c.KnowledgeBaseId);
+            // HNSW 余弦索引：m / ef_construction 采用 pgvector 默认值（16 / 64）
+            e.HasIndex(c => c.Embedding)
+                .HasMethod("hnsw")
+                .HasOperators("vector_cosine_ops")
+                .HasDatabaseName("ix_kb_chunks_embedding");
+        });
+
+        // ===== KbIngestEvent =====
+        b.Entity<KbIngestEvent>(e =>
+        {
+            e.ToTable("kb_ingest_events");
+            e.HasKey(ev => ev.Id);
+            e.Property(ev => ev.Id).HasMaxLength(32);
+            e.Property(ev => ev.DocumentId).HasMaxLength(32).IsRequired();
+            e.Property(ev => ev.Stage).HasMaxLength(32).IsRequired();
+            e.Property(ev => ev.Status).HasMaxLength(16).IsRequired();
+            e.Property(ev => ev.Message).HasMaxLength(2000);
+            e.HasOne<KbDocument>().WithMany()
+                .HasForeignKey(ev => ev.DocumentId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(ev => new { ev.DocumentId, ev.CreatedAt });
+        });
+
+        // ===== RetrievalLog =====
+        b.Entity<RetrievalLog>(e =>
+        {
+            e.ToTable("retrieval_logs");
+            e.HasKey(l => l.Id);
+            e.Property(l => l.Id).HasMaxLength(32);
+            e.Property(l => l.KnowledgeBaseId).HasMaxLength(32);
+            e.Property(l => l.Query).IsRequired();
+            e.Property(l => l.TopScore).HasColumnType("real");
+            e.Property(l => l.Caller).HasMaxLength(64).IsRequired();
+            e.HasIndex(l => l.CreatedAt);
         });
     }
 }
