@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using ManagerPlatform.Models;
+using ManagerPlatform.Services;
 using ManagerPlatform.Stores;
 using ModelContextProtocol.Server;
 
@@ -192,6 +193,80 @@ public static class McpTools
         }
 
         return sb.ToString();
+    }
+
+    // ==================== 知识库检索（RAG） ====================
+
+    // 语音场景输出约束（设计文档 七.8）：最多 3 段、每段 ≤150 字，避免拉长首响与 TTS 时长
+    private const int VoiceMaxSegments = 3;
+    private const int VoiceMaxSegmentChars = 150;
+
+    /// <summary>
+    /// 检索内部知识库：query → embedding → pgvector 余弦 top-k。
+    /// 面向语音场景：最多返回 3 段、每段 ≤150 字并附来源；未命中返回明确提示（不返回空串）。
+    /// </summary>
+    [McpServerTool(Name = "search_knowledge")]
+    [Description("检索内部知识库，返回与问题最相关的片段及来源。用户问到文档、规定、流程、产品资料时使用。")]
+    public static async Task<string> SearchKnowledgeAsync(
+        IServiceProvider services,
+        [Description("用户的问题，用自然语言完整描述")] string query,
+        [Description("可选：限定知识库 ID，多个用英文逗号分隔；不传则检索全部启用的知识库")] string? knowledgeBaseIds,
+        [Description("返回条数，默认 3，最大 5")] int? topK)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return "请提供要检索的问题。";
+
+        using var scope = services.CreateScope();
+        var retrieval = scope.ServiceProvider.GetRequiredService<IRetrievalService>();
+
+        var kbIds = knowledgeBaseIds?
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToArray();
+
+        KnowledgeSearchResult result;
+        try
+        {
+            result = await retrieval.SearchAsync(query, kbIds, topK, RetrievalCallers.Mcp);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 面向语音：检索故障时返回明确提示，让 Agent 能继续作答而不是抛出协议错误
+            scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
+                .CreateLogger(nameof(McpTools))
+                .LogWarning(ex, "search_knowledge 检索失败：{Query}", query);
+            return "知识库检索暂时不可用，请稍后再试。";
+        }
+
+        if (result.Hits.Count == 0)
+            return $"知识库中未找到与「{query.Trim()}」相关的内容。";
+
+        var sb = new StringBuilder();
+        foreach (var hit in result.Hits.Take(VoiceMaxSegments))
+        {
+            sb.Append("【来源：").Append(FormatSource(hit)).AppendLine("】");
+            sb.AppendLine(TruncateForVoice(hit.Content));
+            sb.AppendLine();
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>来源标注：文档标题 + 标题路径（无标题路径时回退页码），如「员工手册.pdf · 第二章 > 2.1 考勤」。</summary>
+    private static string FormatSource(KbSearchHit hit)
+    {
+        var title = string.IsNullOrWhiteSpace(hit.DocumentTitle) ? "未知文档" : hit.DocumentTitle;
+        if (!string.IsNullOrWhiteSpace(hit.HeadingPath))
+            return $"{title} · {hit.HeadingPath}";
+        if (hit.PageNo is { } page)
+            return $"{title} · 第 {page} 页";
+        return title;
+    }
+
+    /// <summary>单段截断到 ≤150 字，超出补省略号。</summary>
+    private static string TruncateForVoice(string content)
+    {
+        var text = (content ?? string.Empty).Trim();
+        return text.Length <= VoiceMaxSegmentChars ? text : text[..VoiceMaxSegmentChars] + "…";
     }
 }
 
