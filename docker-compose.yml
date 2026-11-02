@@ -65,6 +65,14 @@ services:
       # 二期开关（默认关闭，行为与一期一致）
       Rag__EnableRerank: ${RAG_ENABLE_RERANK:-false}
       Rag__EnableHybrid: ${RAG_ENABLE_HYBRID:-false}
+
+      # ===== OCR（扫描版 PDF 兜底，硅基流动 PaddleOCR-VL）=====
+      # 仅当 PDF 平均每页有效字符低于 Ocr__MinCharsPerPage 时整篇转 Markdown；
+      # ApiKey 留空则扫描件直接判 Failed（错误信息提示配置项），正常文本层 PDF 不受影响
+      Ocr__Enabled: ${OCR_ENABLED:-true}
+      Ocr__BaseUrl: ${OCR_BASE_URL:-https://api.siliconflow.cn/v1}
+      Ocr__ApiKey: ${OCR_API_KEY:-}
+      Ocr__Model: ${OCR_MODEL:-PaddlePaddle/PaddleOCR-VL-1.5}
     extra_hosts:
       # 允许容器通过 host.docker.internal 访问宿主机（调度服务在宿主机上运行时必需）
       # Docker Desktop for Windows/Mac 原生支持；Linux 上由 host-gateway 显式映射

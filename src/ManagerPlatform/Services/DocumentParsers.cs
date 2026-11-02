@@ -1,6 +1,8 @@
 using System.Text;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using ManagerPlatform.Options;
+using Microsoft.Extensions.Options;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
 
@@ -9,12 +11,15 @@ namespace ManagerPlatform.Services;
 /// <summary>解析出的章节：文本 + 章节路径（引用展示）+ PDF 页码（1 起）。</summary>
 public sealed record ParsedSection(string Text, string? HeadingPath, int? PageNo);
 
-/// <summary>解析结果：章节集合 + PDF 总页数（非 PDF 为 0）。</summary>
-public sealed record ParsedDocument(IReadOnlyList<ParsedSection> Sections, int PageCount = 0);
+/// <summary>解析结果：章节集合 + PDF 总页数（非 PDF 为 0）+ 是否经 OCR 兜底。</summary>
+public sealed record ParsedDocument(
+    IReadOnlyList<ParsedSection> Sections,
+    int PageCount = 0,
+    bool UsedOcr = false);
 
 /// <summary>
 /// 文档文本解析器：按扩展名分派（txt / md / docx / PDF 文本层）。
-/// 不返回任何格式信息中的图片/排版，扫描版 PDF 无文本层时返回空章节，由调用方判失败。
+/// 不返回任何格式信息中的图片/排版；扫描版 PDF（无文本层）由 PdfParser 走 OCR 兜底。
 /// </summary>
 public interface IDocumentParser
 {
@@ -49,6 +54,12 @@ public sealed class MarkdownParser : IDocumentParser
     public async Task<ParsedDocument> ParseAsync(Stream content, CancellationToken ct = default)
     {
         var text = await PlainTextParser.ReadTextAsync(content, ct);
+        return new ParsedDocument(SplitMarkdown(text));
+    }
+
+    /// <summary>按 ATX 标题切章节；OCR 返回的 Markdown 复用同一套规则（PageNo 为空）。</summary>
+    internal static IReadOnlyList<ParsedSection> SplitMarkdown(string text)
+    {
         var sections = new List<ParsedSection>();
         var headingStack = new List<(int Level, string Title)>();
         var body = new StringBuilder();
@@ -74,7 +85,7 @@ public sealed class MarkdownParser : IDocumentParser
             body.AppendLine(rawLine);
         }
         Flush();
-        return new ParsedDocument(sections);
+        return sections;
     }
 
     /// <summary>识别 ATX 标题（1~6 个 # + 空格/行尾）。</summary>
@@ -140,11 +151,23 @@ public sealed class DocxParser : IDocumentParser
     }
 }
 
-/// <summary>PDF：逐页抽取文本层（PdfPig），无文本层的页跳过；总页数超上限直接失败。</summary>
+/// <summary>
+/// PDF：逐页抽取文本层（PdfPig）；平均每页有效字符低于阈值时，整篇交 OCR 转 Markdown 兜底。
+/// 总页数超上限直接失败。
+/// </summary>
 public sealed class PdfParser : IDocumentParser
 {
     /// <summary>PDF 页数上限：防止单文件拖死 Worker（见技术方案 §7.5）。</summary>
     public const int MaxPages = 200;
+
+    private readonly IOcrClient _ocr;
+    private readonly OcrOptions _options;
+
+    public PdfParser(IOcrClient ocr, IOptions<OcrOptions> options)
+    {
+        _ocr = ocr;
+        _options = options.Value;
+    }
 
     public bool CanParse(string extension) => extension is ".pdf";
 
@@ -152,19 +175,47 @@ public sealed class PdfParser : IDocumentParser
     {
         using var buffer = new MemoryStream();
         await content.CopyToAsync(buffer, ct);
+        var bytes = buffer.ToArray();
 
-        using var pdf = PdfDocument.Open(buffer.ToArray());
+        using var pdf = PdfDocument.Open(bytes);
         if (pdf.NumberOfPages > MaxPages)
             throw new InvalidOperationException($"PDF 共 {pdf.NumberOfPages} 页，超过上限 {MaxPages} 页");
 
         var sections = new List<ParsedSection>();
+        var totalChars = 0;
         for (var pageNo = 1; pageNo <= pdf.NumberOfPages; pageNo++)
         {
             ct.ThrowIfCancellationRequested();
             var text = Normalize(pdf.GetPage(pageNo).Text);
-            if (text.Length > 0) sections.Add(new ParsedSection(text, null, pageNo));
+            if (text.Length > 0)
+            {
+                sections.Add(new ParsedSection(text, null, pageNo));
+                totalChars += text.Length;
+            }
         }
-        return new ParsedDocument(sections, pdf.NumberOfPages);
+
+        // 文本层正常：行为与一期一致，不触发 OCR
+        if (pdf.NumberOfPages > 0 && totalChars / pdf.NumberOfPages >= _options.MinCharsPerPage)
+            return new ParsedDocument(sections, pdf.NumberOfPages);
+
+        // 扫描件：需要 OCR 兜底
+        if (!_options.Enabled)
+            throw new InvalidOperationException(
+                "扫描版 PDF 无有效文本层，而且OCR 已关闭（Ocr:Enabled=false）");
+        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+            throw new InvalidOperationException("扫描版 PDF 需要 OCR，但未配置 Ocr:ApiKey");
+
+        string markdown;
+        using (var forOcr = new MemoryStream(bytes, writable: false))
+        {
+            markdown = await _ocr.RecognizePdfAsync(forOcr, ct);
+        }
+
+        var ocrSections = MarkdownParser.SplitMarkdown(markdown);
+        if (ocrSections.Count == 0)
+            throw new InvalidOperationException("OCR 未识别出有效文本");
+
+        return new ParsedDocument(ocrSections, pdf.NumberOfPages, UsedOcr: true);
     }
 
     /// <summary>PDF 文本层换行碎片较多：压缩连续空行/空格，保留段落分隔。</summary>

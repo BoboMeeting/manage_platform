@@ -137,7 +137,7 @@ public sealed class KbIngestEvent
 
     public string DocumentId { get; set; } = string.Empty;
 
-    /// <summary>Parse / Chunk / Embed / Persist。</summary>
+    /// <summary>Parse / Ocr / Chunk / Embed / Persist（Ocr 仅扫描版 PDF 触发）。</summary>
     public string Stage { get; set; } = string.Empty;
 
     /// <summary>running / succeeded / failed。</summary>

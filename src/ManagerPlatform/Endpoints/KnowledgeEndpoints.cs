@@ -15,7 +15,7 @@ namespace ManagerPlatform.Endpoints;
 /// </summary>
 public static class KnowledgeEndpoints
 {
-    /// <summary>一期支持格式（PDF 仅文本层，无文本层由 Worker 判 Failed）。</summary>
+    /// <summary>支持格式（PDF 优先文本层，无文本层时按 OCR 配置兜底）。</summary>
     private static readonly string[] AllowedExtensions = [".txt", ".md", ".docx", ".pdf"];
 
     /// <summary>单文件大小上限（技术方案 §7.5），上传即拦截，避免无效任务进入流水线。</summary>

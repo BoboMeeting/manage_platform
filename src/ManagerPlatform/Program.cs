@@ -32,6 +32,7 @@ builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptio
 builder.Services.Configure<SchedulerOptions>(builder.Configuration.GetSection(SchedulerOptions.SectionName));
 builder.Services.Configure<MediaOptions>(builder.Configuration.GetSection(MediaOptions.SectionName));
 builder.Services.Configure<RagOptions>(builder.Configuration.GetSection(RagOptions.SectionName));
+builder.Services.Configure<OcrOptions>(builder.Configuration.GetSection(OcrOptions.SectionName));
 
 // RAG 初始化：以 Rag:EmbeddingDim 作为唯一维度来源，注入 kb_chunks 的定长向量列。
 // 只有一个默认值（appsettings.json），compose/.env 若覆盖必须保持一致，换维度等于重建 kb_chunks。
@@ -55,8 +56,11 @@ builder.Services.AddHostedService<KbIngestWorker>();
 builder.Services.AddSingleton<IDocumentParser, PlainTextParser>();
 builder.Services.AddSingleton<IDocumentParser, MarkdownParser>();
 builder.Services.AddSingleton<IDocumentParser, DocxParser>();
-builder.Services.AddSingleton<IDocumentParser, PdfParser>();
+// PdfParser 依赖 IOcrClient（扫描件兜底），非无参构造：先注册自身再以工厂登记接口
+builder.Services.AddSingleton<PdfParser>();
+builder.Services.AddSingleton<IDocumentParser>(sp => sp.GetRequiredService<PdfParser>());
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiEmbeddingClient>();
+builder.Services.AddHttpClient<IOcrClient, OcrClient>();
 
 // ===== 认证 / 授权 =====
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();

@@ -1,6 +1,8 @@
 using System.Threading.Channels;
 using ManagerPlatform.Models;
+using ManagerPlatform.Options;
 using ManagerPlatform.Stores;
+using Microsoft.Extensions.Options;
 
 namespace ManagerPlatform.Services;
 
@@ -31,17 +33,20 @@ public sealed class KbIngestWorker(
     InMemoryKbIngestQueue queue,
     IServiceScopeFactory scopeFactory,
     IEnumerable<IDocumentParser> parsers,
+    IOptions<OcrOptions> ocrOptions,
     ILogger<KbIngestWorker> logger) : BackgroundService
 {
     /// <summary>单文件大小上限（见技术方案 §7.5），超限直接判失败，防止 Worker 被拖死。</summary>
     private const long MaxFileSizeBytes = 50L * 1024 * 1024;
 
     private const string StageParse = "Parse";
+    private const string StageOcr = "Ocr";
     private const string StageChunk = "Chunk";
     private const string StageEmbed = "Embed";
     private const string StagePersist = "Persist";
 
     private readonly IEnumerable<IDocumentParser> _parsers = parsers;
+    private readonly OcrOptions _ocrOptions = ocrOptions.Value;
     private readonly ILogger<KbIngestWorker> _logger = logger;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -129,6 +134,9 @@ public sealed class KbIngestWorker(
                 parsed = await parser.ParseAsync(source, ct);
             }
             await AddEventAsync(store, document.Id, stage, "succeeded", $"解析 {parsed.Sections.Count} 个章节", ct);
+            if (parsed.UsedOcr)
+                await AddEventAsync(store, document.Id, StageOcr, "succeeded",
+                    $"OCR 识别 {parsed.Sections.Count} 个章节（{_ocrOptions.Model}）", ct);
 
             // ---- Chunk ----
             document.Status = KbDocumentStatus.Indexing;
