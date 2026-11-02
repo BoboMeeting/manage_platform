@@ -229,6 +229,7 @@ app.MapAiRoleEndpoints();
 app.MapAdminEndpoints();
 app.MapVideoEndpoints();
 app.MapVideoStreamEndpoint();
+app.MapKnowledgeEndpoints();
 
 // 启动期守护：所有要求管理角色(Observer+)的端点必须位于 /api/admin 下，
 // 否则 Nginx 无法按前缀对外隔离管理端接口。违规则拒绝启动（CI/部署即失败）。

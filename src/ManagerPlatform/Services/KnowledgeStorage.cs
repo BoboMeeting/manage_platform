@@ -16,4 +16,9 @@ public static class KnowledgeStorage
     public static Task DeleteDocumentAsync(
         IStorageService storage, string knowledgeBaseId, string documentId, CancellationToken ct = default) =>
         storage.DeleteDirectoryAsync(KeyPrefix(knowledgeBaseId, documentId), ct);
+
+    /// <summary>删除知识库整目录（全部文档原文件；删除知识库时级联清理）。</summary>
+    public static Task DeleteKnowledgeBaseAsync(
+        IStorageService storage, string knowledgeBaseId, CancellationToken ct = default) =>
+        storage.DeleteDirectoryAsync($"kb/{knowledgeBaseId}", ct);
 }

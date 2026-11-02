@@ -16,6 +16,9 @@ public sealed record KbSearchHit(
     string Content,
     double Score);
 
+/// <summary>某知识库下指定状态的文档数（管理端列表的状态计数）。</summary>
+public sealed record KbDocumentStatusCount(string KnowledgeBaseId, KbDocumentStatus Status, int Count);
+
 /// <summary>知识库仓储：知识库、文档、片段、导入事件、检索日志。</summary>
 public interface IKnowledgeBaseStore
 {
@@ -39,6 +42,8 @@ public interface IKnowledgeBaseStore
     Task AddDocumentAsync(KbDocument document, CancellationToken ct = default);
     Task UpdateDocumentAsync(KbDocument document, CancellationToken ct = default);
     Task DeleteDocumentAsync(string id, CancellationToken ct = default);
+    /// <summary>全部知识库的文档状态计数（一次分组查询，避免列表页 N+1）。</summary>
+    Task<IReadOnlyList<KbDocumentStatusCount>> CountDocumentsByStatusAsync(CancellationToken ct = default);
 
     // ---- 片段 ----
     Task AddChunksAsync(IReadOnlyCollection<KbChunk> chunks, CancellationToken ct = default);
@@ -51,6 +56,10 @@ public interface IKnowledgeBaseStore
     // ---- 导入事件 ----
     Task<IReadOnlyList<KbIngestEvent>> ListEventsAsync(string documentId, CancellationToken ct = default);
     Task AddEventAsync(KbIngestEvent evt, CancellationToken ct = default);
+    /// <summary>清理某文档的全部导入事件（事件表无外键，删除文档时须显式清理）。</summary>
+    Task DeleteEventsByDocumentAsync(string documentId, CancellationToken ct = default);
+    /// <summary>清理某知识库下全部文档的导入事件（删除知识库时调用）。</summary>
+    Task DeleteEventsByKnowledgeBaseAsync(string knowledgeBaseId, CancellationToken ct = default);
 
     // ---- 检索日志 ----
     Task AddRetrievalLogAsync(RetrievalLog log, CancellationToken ct = default);
@@ -136,6 +145,13 @@ public sealed class EfKnowledgeBaseStore(AppDbContext db) : IKnowledgeBaseStore
     public async Task DeleteDocumentAsync(string id, CancellationToken ct = default) =>
         await _db.KbDocuments.Where(d => d.Id == id).ExecuteDeleteAsync(ct);
 
+    public async Task<IReadOnlyList<KbDocumentStatusCount>> CountDocumentsByStatusAsync(
+        CancellationToken ct = default) =>
+        await _db.KbDocuments.AsNoTracking()
+            .GroupBy(d => new { d.KnowledgeBaseId, d.Status })
+            .Select(g => new KbDocumentStatusCount(g.Key.KnowledgeBaseId, g.Key.Status, g.Count()))
+            .ToListAsync(ct);
+
     // ---- 片段 ----
 
     public async Task AddChunksAsync(IReadOnlyCollection<KbChunk> chunks, CancellationToken ct = default)
@@ -210,6 +226,17 @@ public sealed class EfKnowledgeBaseStore(AppDbContext db) : IKnowledgeBaseStore
         _db.KbIngestEvents.Add(evt);
         await _db.SaveChangesAsync(ct);
     }
+
+    public async Task DeleteEventsByDocumentAsync(string documentId, CancellationToken ct = default) =>
+        await _db.KbIngestEvents.Where(ev => ev.DocumentId == documentId).ExecuteDeleteAsync(ct);
+
+    public async Task DeleteEventsByKnowledgeBaseAsync(string knowledgeBaseId, CancellationToken ct = default) =>
+        await _db.KbIngestEvents
+            .Where(ev => _db.KbDocuments
+                .Where(d => d.KnowledgeBaseId == knowledgeBaseId)
+                .Select(d => d.Id)
+                .Contains(ev.DocumentId))
+            .ExecuteDeleteAsync(ct);
 
     // ---- 检索日志 ----
 
