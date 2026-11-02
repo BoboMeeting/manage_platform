@@ -12,13 +12,13 @@ public sealed class RagOptions
     /// <summary>embedding 服务地址（OpenAI 兼容）。如 SiliconFlow：https://api.siliconflow.cn/v1</summary>
     public string EmbeddingBaseUrl { get; set; } = "https://api.siliconflow.cn/v1";
 
-    /// <summary>embedding 服务 API Key（必填，启动期校验非空）。</summary>
+    /// <summary>embedding 服务 API Key。本地 TEI 无鉴权可留空；云端服务（如 SiliconFlow）必填。</summary>
     public string EmbeddingApiKey { get; set; } = string.Empty;
 
     /// <summary>embedding 模型名。如 BAAI/bge-m3（维度 1024）。</summary>
     public string EmbeddingModel { get; set; } = "BAAI/bge-m3";
 
-    /// <summary>embedding 向量维度，须与 <see cref="EmbeddingModel"/> 一致。</summary>
+    /// <summary>embedding 向量维度，须与 <see cref="EmbeddingModel"/> 一致，也是 kb_chunks 定长列的唯一来源。</summary>
     public int EmbeddingDim { get; set; } = 1024;
 
     /// <summary>单次批量 embedding 的文本条数。</summary>
@@ -41,4 +41,12 @@ public sealed class RagOptions
 
     /// <summary>切分重叠字符数（须小于 <see cref="ChunkSize"/>）。</summary>
     public int ChunkOverlap { get; set; } = 80;
+
+    // ===== 二期能力开关（P3 rerank / P4 hybrid；实现前保持关闭，行为与一期一致）=====
+
+    /// <summary>是否启用 rerank 精排（P3）。</summary>
+    public bool EnableRerank { get; set; } = false;
+
+    /// <summary>是否启用 dense + sparse 混合召回（P4）。</summary>
+    public bool EnableHybrid { get; set; } = false;
 }

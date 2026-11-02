@@ -97,8 +97,12 @@ public sealed class KbDocument
 /// <summary>文档片段（检索基本单位）。</summary>
 public sealed class KbChunk
 {
-    /// <summary>全局唯一 embedding 维度：同一张表的向量列必须定长。</summary>
-    public const int EmbeddingDimension = 1024;
+    /// <summary>
+    /// 全局唯一 embedding 维度：同一张表的向量列必须定长。
+    /// 启动时由 Program.cs 按 Rag:EmbeddingDim 注入（在建 DbContext 模型之前）；
+    /// 换模型/维度 = 重建 kb_chunks，不能热切换。
+    /// </summary>
+    public static int EmbeddingDimension { get; set; } = 1024;
 
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 

@@ -53,6 +53,18 @@ services:
       # HLS 点播对外基址（nginx 静态服务），play-url 返回 {PublicBaseUrl}/videos/{id}/hls/master.m3u8
       # 返回给客户端/管理端前端拼接播放地址，localhost 指客户端本机；生产改服务器 IP/域名
       Media__PublicBaseUrl: ${MEDIA_PUBLIC_BASE_URL:-http://localhost:8088/media}
+
+      # ===== RAG（知识库）=====
+      # EmbeddingDim 为 kb_chunks 向量列的唯一定长来源，容器内必须与 appsettings.json(1024) 一致；
+      # 换模型/维度 = 重建 kb_chunks（服务启动即按此维度建表）。ApiKey 本地 TEI 可留空。
+      Rag__EmbeddingBaseUrl: ${RAG_EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      Rag__EmbeddingApiKey: ${RAG_EMBEDDING_API_KEY:-}
+      Rag__EmbeddingModel: ${RAG_EMBEDDING_MODEL:-BAAI/bge-m3}
+      Rag__EmbeddingDim: ${RAG_EMBEDDING_DIM:-1024}
+      Rag__EmbeddingTimeoutSeconds: ${RAG_EMBEDDING_TIMEOUT:-60}
+      # 二期开关（默认关闭，行为与一期一致）
+      Rag__EnableRerank: ${RAG_ENABLE_RERANK:-false}
+      Rag__EnableHybrid: ${RAG_ENABLE_HYBRID:-false}
     extra_hosts:
       # 允许容器通过 host.docker.internal 访问宿主机（调度服务在宿主机上运行时必需）
       # Docker Desktop for Windows/Mac 原生支持；Linux 上由 host-gateway 显式映射

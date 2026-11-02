@@ -82,7 +82,9 @@ public sealed class OpenAiEmbeddingClient : IEmbeddingClient
         {
             Content = JsonContent.Create(new EmbeddingRequest(_options.EmbeddingModel, texts)),
         };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.EmbeddingApiKey);
+        // 本地 TEI 无鉴权：ApiKey 留空时不发 Authorization，避免服务端因空 Bearer 拒绝
+        if (!string.IsNullOrWhiteSpace(_options.EmbeddingApiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.EmbeddingApiKey);
 
         using var response = await _http.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode)

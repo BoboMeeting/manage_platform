@@ -99,6 +99,20 @@ public static class KnowledgeEndpoints
             return Results.Ok(items);
         });
 
+        // 详情：管理端详情页头部/编辑回填（列表项包了一层计数，单独取更直接）
+        group.MapGet("/{kbId}", async (
+            string kbId,
+            HttpContext ctx,
+            IKnowledgeBaseStore store,
+            CancellationToken ct) =>
+        {
+            if (ctx.User.ToCurrentUser() is null) return Results.Unauthorized();
+            var kb = await store.GetAsync(kbId, ct);
+            return kb is null
+                ? Results.NotFound(new { error = "知识库不存在" })
+                : Results.Ok(kb);
+        });
+
         // 改名 / 启停 / 调 chunk 参数（部分更新；chunk 参数只影响后续导入与重建）
         group.MapPatch("/{kbId}", async (
             string kbId,
@@ -255,6 +269,21 @@ public static class KnowledgeEndpoints
             pageSize = Math.Clamp(pageSize <= 0 ? 20 : pageSize, 1, 100);
             var (items, total) = await store.ListDocumentsAsync(kbId, page, pageSize, ct);
             return Results.Ok(new PagedResult<KbDocument>(items, total, page, pageSize));
+        });
+
+        // 文档详情：详情弹窗刷新（状态/失败原因/chunk 数）
+        group.MapGet("/{kbId}/documents/{docId}", async (
+            string kbId,
+            string docId,
+            HttpContext ctx,
+            IKnowledgeBaseStore store,
+            CancellationToken ct) =>
+        {
+            if (ctx.User.ToCurrentUser() is null) return Results.Unauthorized();
+            var document = await store.GetDocumentAsync(docId, ct);
+            if (document is null || document.KnowledgeBaseId != kbId)
+                return Results.NotFound(new { error = "文档不存在" });
+            return Results.Ok(document);
         });
 
         // 失败重试：按文档整体重建（Worker 先删旧 chunk 再写新 chunk）；重试上限 3 次（按 failed 事件数计）

@@ -33,14 +33,12 @@ builder.Services.Configure<SchedulerOptions>(builder.Configuration.GetSection(Sc
 builder.Services.Configure<MediaOptions>(builder.Configuration.GetSection(MediaOptions.SectionName));
 builder.Services.Configure<RagOptions>(builder.Configuration.GetSection(RagOptions.SectionName));
 
-// RAG embedding API Key 必填：缺则无法生成向量索引，启动即失败
+// RAG 初始化：以 Rag:EmbeddingDim 作为唯一维度来源，注入 kb_chunks 的定长向量列。
+// 只有一个默认值（appsettings.json），compose/.env 若覆盖必须保持一致，换维度等于重建 kb_chunks。
 var rag = builder.Configuration.GetSection(RagOptions.SectionName).Get<RagOptions>() ?? new RagOptions();
-if (string.IsNullOrWhiteSpace(rag.EmbeddingApiKey))
-    throw new InvalidOperationException("缺少 RAG 配置：Rag:EmbeddingApiKey 未设置（embedding 服务 API Key）");
-// 向量维度必须与 kb_chunks 的定长列一致，否则插入会被数据库拒绝
-if (rag.EmbeddingDim != KbChunk.EmbeddingDimension)
-    throw new InvalidOperationException(
-        $"RAG 配置维度不一致：Rag:EmbeddingDim={rag.EmbeddingDim}，数据库列固定为 {KbChunk.EmbeddingDimension}");
+if (rag.EmbeddingDim <= 0)
+    throw new InvalidOperationException("RAG 配置无效：Rag:EmbeddingDim 必须为正整数");
+KbChunk.EmbeddingDimension = rag.EmbeddingDim;
 
 // ===== 后台服务 =====
 builder.Services.AddHostedService<ManagerPlatform.Services.ConferenceCleanupService>();
