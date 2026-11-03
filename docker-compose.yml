@@ -64,6 +64,13 @@ services:
       Rag__EmbeddingTimeoutSeconds: ${RAG_EMBEDDING_TIMEOUT:-60}
       # 二期开关（默认关闭，行为与一期一致）
       Rag__EnableRerank: ${RAG_ENABLE_RERANK:-false}
+      # rerank 精排（P3，硅基流动 /v1/rerank）；Key 可与 OCR 共用同一个硅基流动 Key。
+      # 候选 ≤3 跳过、超时/报错/Key 为空时均回退向量检索原始顺序，不影响检索可用性
+      Rag__RerankBaseUrl: ${RAG_RERANK_BASE_URL:-https://api.siliconflow.cn/v1}
+      Rag__RerankApiKey: ${RAG_RERANK_API_KEY:-}
+      Rag__RerankModel: ${RAG_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      Rag__RerankCandidateTopN: ${RAG_RERANK_CANDIDATE_TOPN:-20}
+      Rag__RerankTimeoutSeconds: ${RAG_RERANK_TIMEOUT:-20}
       Rag__EnableHybrid: ${RAG_ENABLE_HYBRID:-false}
 
       # ===== OCR（扫描版 PDF 兜底，硅基流动 PaddleOCR-VL）=====

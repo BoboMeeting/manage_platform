@@ -377,7 +377,8 @@ public static class KnowledgeEndpoints
 
             var result = await retrieval.SearchAsync(
                 req.Query.Trim(), [kbId], req.TopK, RetrievalCallers.AdminDebug, ct);
-            return Results.Ok(new KnowledgeSearchResponse(req.Query.Trim(), result.ElapsedMs, result.Hits));
+            return Results.Ok(new KnowledgeSearchResponse(
+                req.Query.Trim(), result.ElapsedMs, result.RerankElapsedMs, result.Hits));
         });
 
         return app;
@@ -410,4 +411,5 @@ public sealed record KnowledgeSearchRequest(string? Query, int? TopK);
 public sealed record KnowledgeSearchResponse(
     string Query,
     int ElapsedMs,
+    int? RerankElapsedMs,
     IReadOnlyList<KbSearchHit> Hits);

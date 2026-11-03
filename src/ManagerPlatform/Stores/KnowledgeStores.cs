@@ -6,7 +6,11 @@ using Pgvector.EntityFrameworkCore;
 
 namespace ManagerPlatform.Stores;
 
-/// <summary>向量检索命中结果（含来源信息，供 MCP 直接组织回答）。</summary>
+/// <summary>
+/// 向量检索命中结果（含来源信息，供 MCP 直接组织回答）。
+/// Score 为向量余弦相似度；RerankScore 为精排分数（未启用 rerank 或未命中时为 null）；
+/// RetrievalSource 标记召回路径（dense / hybrid，P4 使用）。
+/// </summary>
 public sealed record KbSearchHit(
     string ChunkId,
     string DocumentId,
@@ -14,7 +18,9 @@ public sealed record KbSearchHit(
     string? HeadingPath,
     int? PageNo,
     string Content,
-    double Score);
+    double Score,
+    double? RerankScore = null,
+    string RetrievalSource = "dense");
 
 /// <summary>某知识库下指定状态的文档数（管理端列表的状态计数）。</summary>
 public sealed record KbDocumentStatusCount(string KnowledgeBaseId, KbDocumentStatus Status, int Count);

@@ -47,6 +47,21 @@ public sealed class RagOptions
     /// <summary>是否启用 rerank 精排（P3）。</summary>
     public bool EnableRerank { get; set; } = false;
 
+    /// <summary>rerank 服务地址（OpenAI/Cohere 兼容，硅基流动为 https://api.siliconflow.cn/v1）。</summary>
+    public string RerankBaseUrl { get; set; } = "https://api.siliconflow.cn/v1";
+
+    /// <summary>rerank API Key（与 OCR 共用硅基流动 Key；为空时跳过调用并回退原始顺序）。</summary>
+    public string RerankApiKey { get; set; } = string.Empty;
+
+    /// <summary>rerank 模型名。</summary>
+    public string RerankModel { get; set; } = "BAAI/bge-reranker-v2-m3";
+
+    /// <summary>送入 rerank 的候选片段数上限（须大于最终 top-k 才有意义）。</summary>
+    public int RerankCandidateTopN { get; set; } = 20;
+
+    /// <summary>rerank HTTP 超时（秒）；超时即回退原始顺序，不让检索失败。</summary>
+    public int RerankTimeoutSeconds { get; set; } = 20;
+
     /// <summary>是否启用 dense + sparse 混合召回（P4）。</summary>
     public bool EnableHybrid { get; set; } = false;
 }

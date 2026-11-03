@@ -61,6 +61,8 @@ builder.Services.AddSingleton<PdfParser>();
 builder.Services.AddSingleton<IDocumentParser>(sp => sp.GetRequiredService<PdfParser>());
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiEmbeddingClient>();
 builder.Services.AddHttpClient<IOcrClient, OcrClient>();
+// rerank 精排（P3）：独立 Http 客户端，超时与失败降级在 RerankClient 内处理
+builder.Services.AddHttpClient<IRerankClient, RerankClient>();
 
 // ===== 认证 / 授权 =====
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();

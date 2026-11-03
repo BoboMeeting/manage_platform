@@ -14,8 +14,9 @@ public static class RetrievalCallers
     public const string AdminDebug = "admin-debug";
 }
 
-/// <summary>检索结果：命中片段（含来源信息）+ 端到端耗时（embedding + 向量检索）。</summary>
-public sealed record KnowledgeSearchResult(IReadOnlyList<KbSearchHit> Hits, int ElapsedMs);
+/// <summary>检索结果：命中片段（含来源信息）+ 端到端耗时（embedding + 向量检索），以及可选的 rerank 耗时。</summary>
+public sealed record KnowledgeSearchResult(
+    IReadOnlyList<KbSearchHit> Hits, int ElapsedMs, int? RerankElapsedMs = null);
 
 /// <summary>
 /// 检索服务：query → embedding → pgvector 余弦 top-k → 组装引用信息 → 写检索日志。
@@ -78,10 +79,14 @@ public sealed class QueryEmbeddingCache
 public sealed class RetrievalService(
     IKnowledgeBaseStore store,
     IEmbeddingClient embedding,
+    IRerankClient rerank,
     QueryEmbeddingCache cache,
     IOptions<RagOptions> options,
     ILogger<RetrievalService> logger) : IRetrievalService
 {
+    /// <summary>候选数不超过该值时跳过 rerank（精排收益有限，且省一次外部调用）。</summary>
+    private const int MinRerankCandidates = 3;
+
     private readonly RagOptions _options = options.Value;
     private readonly ILogger<RetrievalService> _logger = logger;
 
@@ -101,17 +106,43 @@ public sealed class RetrievalService(
 
         var sw = Stopwatch.StartNew();
         var vector = await GetQueryVectorAsync(normalized, ct);
-        var hits = await store.SearchChunksAsync(vector, kbIds, k, _options.MinScore, ct);
+
+        // 开启 rerank 时先多取候选（RerankCandidateTopN），精排后再截断到 k；关闭时与一期完全一致
+        var candidateCount = _options.EnableRerank
+            ? Math.Max(k, _options.RerankCandidateTopN)
+            : k;
+        var candidates = await store.SearchChunksAsync(vector, kbIds, candidateCount, _options.MinScore, ct);
+
+        int? rerankElapsedMs = null;
+        IReadOnlyList<KbSearchHit> hits = candidates;
+        if (_options.EnableRerank && candidates.Count > MinRerankCandidates)
+        {
+            var rerankSw = Stopwatch.StartNew();
+            var ranked = await rerank.RerankAsync(
+                normalized, candidates.Select(c => c.Content).ToList(), k, ct);
+            rerankSw.Stop();
+            rerankElapsedMs = (int)rerankSw.ElapsedMilliseconds;
+
+            // 接口失败/未配置 Key 时返回空集合，此时保持向量检索原始顺序，仅截断到 k
+            hits = ranked.Count > 0
+                ? ranked.Take(k).Select(r => candidates[r.Index] with { RerankScore = r.Score }).ToList()
+                : candidates.Take(k).ToList();
+        }
+        else if (candidates.Count > k)
+        {
+            hits = candidates.Take(k).ToList();
+        }
+
         sw.Stop();
 
         var elapsedMs = (int)sw.ElapsedMilliseconds;
         await WriteLogAsync(normalized, kbIds, k, hits, elapsedMs, caller, ct);
 
         _logger.LogInformation(
-            "知识库检索完成：{Hits} 条命中，top-k={TopK}，耗时 {Elapsed}ms，调用方={Caller}",
-            hits.Count, k, elapsedMs, Truncate(caller));
+            "知识库检索完成：{Hits} 条命中，top-k={TopK}，候选={Candidates}，rerank 耗时={RerankElapsed}ms，总耗时 {Elapsed}ms，调用方={Caller}",
+            hits.Count, k, candidates.Count, rerankElapsedMs?.ToString() ?? "-", elapsedMs, Truncate(caller));
 
-        return new KnowledgeSearchResult(hits, elapsedMs);
+        return new KnowledgeSearchResult(hits, elapsedMs, rerankElapsedMs);
     }
 
     private async Task<Vector> GetQueryVectorAsync(string query, CancellationToken ct)
