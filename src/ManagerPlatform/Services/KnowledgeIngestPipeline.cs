@@ -3,6 +3,7 @@ using ManagerPlatform.Models;
 using ManagerPlatform.Options;
 using ManagerPlatform.Stores;
 using Microsoft.Extensions.Options;
+using NpgsqlTypes;
 
 namespace ManagerPlatform.Services;
 
@@ -158,7 +159,7 @@ public sealed class KbIngestWorker(
             await AddEventAsync(store, document.Id, stage, "succeeded",
                 $"生成 {vectors.Count} 个向量（{knowledgeBase.EmbeddingModel}）", ct);
 
-            // ---- Persist：一期按文档整体重建（先删旧 chunk 再写新 chunk）----
+            // ---- Persist：一期按文档整体重建（先删旧 chunk 再写新 chunk）；P4 同步写入 tsvector + content_hash ----
             stage = StagePersist;
             await AddEventAsync(store, document.Id, stage, "running", null, ct);
             await store.DeleteChunksByDocumentAsync(document.Id, ct);
@@ -174,6 +175,9 @@ public sealed class KbIngestWorker(
                 HeadingPath = c.HeadingPath,
                 PageNo = c.PageNo,
                 Embedding = vectors[i],
+                // P4：bigram 分词 → tsvector，sha256(content) → ContentHash
+                SearchVector = NpgsqlTsVector.Parse(ChineseTokenizer.ToTokens(c.Content)),
+                ContentHash = ChineseTokenizer.Sha256Hex(c.Content),
                 CreatedAt = now,
             }).ToList();
             await store.AddChunksAsync(rows, ct);

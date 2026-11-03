@@ -64,4 +64,15 @@ public sealed class RagOptions
 
     /// <summary>是否启用 dense + sparse 混合召回（P4）。</summary>
     public bool EnableHybrid { get; set; } = false;
+
+    // ===== P4 hybrid 融合参数 =====
+
+    /// <summary>dense 路径取候选数（默认 30）。</summary>
+    public int HybridDenseTopK { get; set; } = 30;
+
+    /// <summary>sparse 路径取候选数（默认 30）。</summary>
+    public int HybridSparseTopK { get; set; } = 30;
+
+    /// <summary>RRF 融合的 k 参数（默认 60），score = Σ 1/(k + rank)。</summary>
+    public int RrfK { get; set; } = 60;
 }

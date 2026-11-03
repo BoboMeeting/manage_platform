@@ -359,8 +359,7 @@ public static class KnowledgeEndpoints
             return Results.Ok(await store.ListEventsAsync(docId, ct));
         });
 
-        // ===== 检索调试（Scalar 里直接验证检索效果，写 retrieval_logs 记为 admin-debug）=====
-
+        // 检索调试：Scalar 里直接验证检索效果，写 retrieval_logs 记为 admin-debug
         group.MapPost("/{kbId}/search", async (
             string kbId,
             KnowledgeSearchRequest req,
@@ -379,6 +378,42 @@ public static class KnowledgeEndpoints
                 req.Query.Trim(), [kbId], req.TopK, RetrievalCallers.AdminDebug, ct);
             return Results.Ok(new KnowledgeSearchResponse(
                 req.Query.Trim(), result.ElapsedMs, result.RerankElapsedMs, result.Hits));
+        });
+
+        // ===== 重建索引（P4/P5 共用入口）=====
+
+        // 全库重建：将该库所有 Ready/Failed 文档置 Pending 并入队，Worker 自动补齐 SearchVector + ContentHash；
+        // P5 上线后自动变为增量行为，前端无需改动
+        group.MapPost("/{kbId}/reindex", async (
+            string kbId,
+            HttpContext ctx,
+            IKnowledgeBaseStore store,
+            IKbIngestQueue queue,
+            ILogger<ApiLog> logger,
+            CancellationToken ct) =>
+        {
+            if (ctx.User.ToCurrentUser() is not { } cu) return Results.Unauthorized();
+            if (await store.GetAsync(kbId, ct) is null)
+                return Results.NotFound(new { error = "知识库不存在" });
+
+            // 列出该库所有文档（不分页），将终态文档重新入队
+            var allDocs = await store.ListDocumentsAllAsync(kbId, ct);
+            var enqueued = 0;
+            foreach (var doc in allDocs)
+            {
+                if (doc.Status == KbDocumentStatus.Ready || doc.Status == KbDocumentStatus.Failed)
+                {
+                    doc.Status = KbDocumentStatus.Pending;
+                    doc.ErrorMessage = null;
+                    await store.UpdateDocumentAsync(doc, ct);
+                    queue.Enqueue(doc.Id);
+                    enqueued++;
+                }
+            }
+
+            logger.LogInformation("审计[重建知识库索引]：操作人={Operator}，知识库={KbId}，入队={Enqueued} 个文档",
+                cu.UserId, kbId, enqueued);
+            return Results.Ok(new { enqueued });
         });
 
         return app;

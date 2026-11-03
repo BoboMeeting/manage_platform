@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
+using NpgsqlTypes;
 using Pgvector;
 
 #nullable disable
@@ -175,6 +176,11 @@ namespace ManagerPlatform.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -199,6 +205,10 @@ namespace ManagerPlatform.Migrations
                     b.Property<int?>("PageNo")
                         .HasColumnType("integer");
 
+                    b.Property<NpgsqlTsVector>("SearchVector")
+                        .IsRequired()
+                        .HasColumnType("tsvector");
+
                     b.Property<int>("Seq")
                         .HasColumnType("integer");
 
@@ -211,6 +221,11 @@ namespace ManagerPlatform.Migrations
                     NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Embedding"), new[] { "vector_cosine_ops" });
 
                     b.HasIndex("KnowledgeBaseId");
+
+                    b.HasIndex("SearchVector")
+                        .HasDatabaseName("ix_kb_chunks_search_vector");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("SearchVector"), "gin");
 
                     b.HasIndex("DocumentId", "Seq")
                         .IsUnique();

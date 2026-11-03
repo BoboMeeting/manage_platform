@@ -247,6 +247,12 @@ public sealed class AppDbContext : DbContext
             e.Property(c => c.Embedding)
                 .HasColumnType($"vector({KbChunk.EmbeddingDimension})")
                 .IsRequired();
+            // P4 hybrid：tsvector 列 + GIN 索引
+            e.Property(c => c.SearchVector)
+                .HasColumnType("tsvector")
+                .IsRequired();
+            // P4/P5：sha256(content)，后续增量索引用
+            e.Property(c => c.ContentHash).HasMaxLength(64).IsRequired();
             e.HasOne<KbDocument>().WithMany()
                 .HasForeignKey(c => c.DocumentId).OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(c => new { c.DocumentId, c.Seq }).IsUnique();
@@ -256,6 +262,10 @@ public sealed class AppDbContext : DbContext
                 .HasMethod("hnsw")
                 .HasOperators("vector_cosine_ops")
                 .HasDatabaseName("ix_kb_chunks_embedding");
+            // P4：GIN 索引加速 tsvector 匹配（用于 sparse 召回）
+            e.HasIndex(c => c.SearchVector)
+                .HasMethod("gin")
+                .HasDatabaseName("ix_kb_chunks_search_vector");
         });
 
         // ===== KbIngestEvent =====

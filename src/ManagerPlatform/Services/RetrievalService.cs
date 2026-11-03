@@ -21,6 +21,9 @@ public sealed record KnowledgeSearchResult(
 /// <summary>
 /// 检索服务：query → embedding → pgvector 余弦 top-k → 组装引用信息 → 写检索日志。
 /// 只检索启用中的知识库；knowledgeBaseIds 为空表示检索全部启用库。
+/// 
+/// P4 hybrid（EnableHybrid=true）：同时跑 dense 与 sparse 两条召回路径，RRF 融合后再 rerank。
+/// 关闭 hybrid 时行为与一期完全一致（仅 dense）。
 /// </summary>
 public interface IRetrievalService
 {
@@ -105,16 +108,68 @@ public sealed class RetrievalService(
             return new KnowledgeSearchResult(Array.Empty<KbSearchHit>(), 0);
 
         var sw = Stopwatch.StartNew();
-        var vector = await GetQueryVectorAsync(normalized, ct);
 
-        // 开启 rerank 时先多取候选（RerankCandidateTopN），精排后再截断到 k；关闭时与一期完全一致
-        var candidateCount = _options.EnableRerank
-            ? Math.Max(k, _options.RerankCandidateTopN)
-            : k;
-        var candidates = await store.SearchChunksAsync(vector, kbIds, candidateCount, _options.MinScore, ct);
+        IReadOnlyList<KbSearchHit> candidates;
+        string retrievalSource;
+
+        if (_options.EnableHybrid)
+        {
+            // ===== P4 hybrid：dense + sparse 并行召回 → RRF 融合 =====
+            var hybridSw = Stopwatch.StartNew();
+
+            // dense 路径：多取候选给 rerank 留出空间
+            var denseTopK = Math.Max(_options.HybridDenseTopK,
+                _options.EnableRerank ? _options.RerankCandidateTopN : k);
+            var denseVector = await GetQueryVectorAsync(normalized, ct);
+            var denseTask = store.SearchChunksAsync(
+                denseVector, kbIds, denseTopK, _options.MinScore, ct);
+
+            // sparse 路径：中文 bigram token → tsquery
+            var queryTokens = ChineseTokenizer.QueryTokens(normalized);
+            IReadOnlyList<KbSearchHit> sparseHits = Array.Empty<KbSearchHit>();
+            if (queryTokens.Count > 0)
+            {
+                try
+                {
+                    sparseHits = await store.SearchChunksSparseAsync(
+                        queryTokens, kbIds, _options.HybridSparseTopK, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // sparse 失败降级为纯 dense（只告警，不让检索失败）
+                    _logger.LogWarning(ex, "hybrid sparse 路径失败，降级为纯 dense 召回");
+                }
+            }
+
+            var denseHits = await denseTask;
+
+            // RRF 融合：score = Σ 1/(k + rank)
+            candidates = RrfFuse(denseHits, sparseHits, _options.RrfK);
+            retrievalSource = sparseHits.Count > 0 && denseHits.Count > 0 ? "hybrid"
+                : denseHits.Count > 0 ? "dense"
+                : sparseHits.Count > 0 ? "sparse"
+                : "dense";
+
+            hybridSw.Stop();
+            _logger.LogInformation(
+                "hybrid 召回完成：dense={Dense}，sparse={Sparse}，融合后={Fused}，耗时 {HybridElapsed}ms",
+                denseHits.Count, sparseHits.Count, candidates.Count, hybridSw.ElapsedMilliseconds);
+        }
+        else
+        {
+            // ===== 一期 / 纯 dense 路径 =====
+            var vector = await GetQueryVectorAsync(normalized, ct);
+            var candidateCount = _options.EnableRerank
+                ? Math.Max(k, _options.RerankCandidateTopN)
+                : k;
+            candidates = await store.SearchChunksAsync(vector, kbIds, candidateCount, _options.MinScore, ct);
+            retrievalSource = "dense";
+        }
 
         int? rerankElapsedMs = null;
         IReadOnlyList<KbSearchHit> hits = candidates;
+
+        // rerank：开启后在融合候选上精排，候选 > 3 才调用
         if (_options.EnableRerank && candidates.Count > MinRerankCandidates)
         {
             var rerankSw = Stopwatch.StartNew();
@@ -123,26 +178,62 @@ public sealed class RetrievalService(
             rerankSw.Stop();
             rerankElapsedMs = (int)rerankSw.ElapsedMilliseconds;
 
-            // 接口失败/未配置 Key 时返回空集合，此时保持向量检索原始顺序，仅截断到 k
             hits = ranked.Count > 0
-                ? ranked.Take(k).Select(r => candidates[r.Index] with { RerankScore = r.Score }).ToList()
-                : candidates.Take(k).ToList();
+                ? ranked.Take(k).Select(r => candidates[r.Index] with { RerankScore = r.Score, RetrievalSource = retrievalSource }).ToList()
+                : candidates.Take(k).Select(c => c with { RetrievalSource = retrievalSource }).ToList();
         }
-        else if (candidates.Count > k)
+        else
         {
-            hits = candidates.Take(k).ToList();
+            hits = candidates.Take(k).Select(c => c with { RetrievalSource = retrievalSource }).ToList();
         }
 
         sw.Stop();
-
         var elapsedMs = (int)sw.ElapsedMilliseconds;
+
         await WriteLogAsync(normalized, kbIds, k, hits, elapsedMs, caller, ct);
 
         _logger.LogInformation(
-            "知识库检索完成：{Hits} 条命中，top-k={TopK}，候选={Candidates}，rerank 耗时={RerankElapsed}ms，总耗时 {Elapsed}ms，调用方={Caller}",
-            hits.Count, k, candidates.Count, rerankElapsedMs?.ToString() ?? "-", elapsedMs, Truncate(caller));
+            "知识库检索完成：{Hits} 条命中，top-k={TopK}，候选={Candidates}，来源={Source}，rerank 耗时={RerankElapsed}ms，总耗时 {Elapsed}ms，调用方={Caller}",
+            hits.Count, k, candidates.Count, retrievalSource,
+            rerankElapsedMs?.ToString() ?? "-", elapsedMs, Truncate(caller));
 
         return new KnowledgeSearchResult(hits, elapsedMs, rerankElapsedMs);
+    }
+
+    /// <summary>
+    /// Reciprocal Rank Fusion 融合。
+    /// 对 dense + sparse 两路结果按 RRF 合并：score = Σ 1/(k + rank)。
+    /// sparse 独有的片段（dense 未召回）Score 直接使用 ts_rank 原始分。
+    /// </summary>
+    private static IReadOnlyList<KbSearchHit> RrfFuse(
+        IReadOnlyList<KbSearchHit> dense, IReadOnlyList<KbSearchHit> sparse, int rrfK)
+    {
+        var scores = new Dictionary<string, (double RrfScore, KbSearchHit Hit)>();
+
+        for (int rank = 0; rank < dense.Count; rank++)
+        {
+            var hit = dense[rank];
+            var rrfScore = 1.0 / (rrfK + rank);
+            if (scores.TryGetValue(hit.ChunkId, out var existing))
+                scores[hit.ChunkId] = (existing.RrfScore + rrfScore, existing.Hit);
+            else
+                scores[hit.ChunkId] = (rrfScore, hit);
+        }
+
+        for (int rank = 0; rank < sparse.Count; rank++)
+        {
+            var hit = sparse[rank];
+            var rrfScore = 1.0 / (rrfK + rank);
+            if (scores.TryGetValue(hit.ChunkId, out var existing))
+                scores[hit.ChunkId] = (existing.RrfScore + rrfScore, existing.Hit);
+            else
+                scores[hit.ChunkId] = (rrfScore, hit with { RetrievalSource = "sparse-only" });
+        }
+
+        return scores.Values
+            .OrderByDescending(x => x.RrfScore)
+            .Select(x => x.Hit with { Score = x.RrfScore })
+            .ToList();
     }
 
     private async Task<Vector> GetQueryVectorAsync(string query, CancellationToken ct)

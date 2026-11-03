@@ -1,3 +1,4 @@
+using NpgsqlTypes;
 using Pgvector;
 
 namespace ManagerPlatform.Models;
@@ -126,6 +127,12 @@ public sealed class KbChunk
 
     /// <summary>向量（写入前必须赋值，不允许为空）。</summary>
     public Vector Embedding { get; set; } = null!;
+
+    /// <summary>bigram 分词后的 tsvector（P4 hybrid 稀疏检索；写入前赋值，不允许为空）。</summary>
+    public NpgsqlTsVector SearchVector { get; set; } = null!;
+
+    /// <summary>sha256(content) 小写 hex（P5 增量索引用；P4 阶段也一并写入，后续增量直接启用）。</summary>
+    public string ContentHash { get; set; } = string.Empty;
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
