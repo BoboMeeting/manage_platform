@@ -37,7 +37,7 @@ public static class ChineseTokenizer
 
                 if (len == 1)
                 {
-                    AppendToken(sb, span[start..1], ref hasToken);
+                    AppendToken(sb, span.Slice(start, 1), ref hasToken);
                 }
                 else
                 {
