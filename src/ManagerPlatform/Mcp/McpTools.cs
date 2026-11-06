@@ -210,8 +210,8 @@ public static class McpTools
     public static async Task<string> SearchKnowledgeAsync(
         IServiceProvider services,
         [Description("用户的问题，用自然语言完整描述")] string query,
-        [Description("可选：限定知识库 ID，多个用英文逗号分隔；不传则检索全部启用的知识库")] string? knowledgeBaseIds,
-        [Description("返回条数，默认 3，最大 5")] int? topK)
+        [Description("可选：限定知识库 ID，多个用英文逗号分隔；不传则检索全部启用的知识库")] string? knowledgeBaseIds = null,
+        [Description("返回条数，默认 3，最大 5")] int? topK = null)
     {
         if (string.IsNullOrWhiteSpace(query))
             return "请提供要检索的问题。";
